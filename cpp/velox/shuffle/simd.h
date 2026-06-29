@@ -65,6 +65,54 @@ inline uint8_t extractBitsToByte(const uint8_t* srcAddr, uint32_t* offset) {
   return dst;
 }
 
+#if defined(__ARM_FEATURE_SVE) && defined(__aarch64__)
+namespace detail {
+
+// GCC SVE ACLE uses overloaded svld1_gather_index; Clang uses svld1_gather_u32index.
+inline svuint32_t sveGatherU32(
+    svbool_t pg,
+    const uint32_t* base,
+    svuint32_t indices) {
+#if defined(__clang__)
+  return svld1_gather_u32index(pg, base, indices);
+#else
+  return svld1_gather_index(pg, base, indices);
+#endif
+}
+
+// Portable predicate for [start, end) u32 lanes across GCC/Clang and any SVE VL.
+inline svbool_t sveWhileLtU32(uint32_t start, uint32_t end) {
+#if defined(__clang__)
+  return svwhilelt_b32_u32(start, end);
+#else
+  return svwhilelt_b32(start, end);
+#endif
+}
+
+// Process exactly 8 bit offsets; loop handles VL < 8 (e.g. Kunpeng 920 128-bit SVE).
+inline uint8_t extractBitsToByteSve(const uint8_t* srcAddr, uint32_t* offset) {
+  uint8_t result = 0;
+  uint32_t i = 0;
+  while (i < 8) {
+    const svbool_t pg = sveWhileLtU32(i, 8);
+    const svuint32_t offsetVec = svld1_u32(pg, offset + i);
+    const svuint32_t indices = svlsr_n_u32_x(pg, offsetVec, 5);
+    const svuint32_t srcNullVec =
+        sveGatherU32(pg, reinterpret_cast<const uint32_t*>(srcAddr), indices);
+    const svuint32_t offsetIn4Byte = svand_n_u32_x(pg, offsetVec, 0x1F);
+    const svuint32_t bitVec = svlsr_u32_x(pg, srcNullVec, offsetIn4Byte);
+    const svuint32_t shifts = svadd_n_u32_x(pg, svindex_u32(0, 1), i);
+    const svuint32_t contribution =
+        svlsl_u32_x(pg, svand_n_u32_x(pg, bitVec, 1), shifts);
+    result |= static_cast<uint8_t>(svaddv_u32(pg, contribution));
+    i += svcntw();
+  }
+  return result;
+}
+
+} // namespace detail
+#endif
+
 inline uint8_t extractBitsToByteSimd(const uint8_t* srcAddr, uint32_t* offset) {
 #if defined(__x86_64__)
   __m256i offsetVec = _mm256_loadu_si256((__m256i*)offset);
@@ -77,16 +125,7 @@ inline uint8_t extractBitsToByteSimd(const uint8_t* srcAddr, uint32_t* offset) {
   __m256i bitInSignVec = _mm256_slli_epi32(bitVec, 31);
   return (uint8_t)_mm256_movemask_ps(_mm256_cvtepi32_ps(bitInSignVec));
 #elif defined(__ARM_FEATURE_SVE) && defined(__aarch64__)
-  const svbool_t pg = svptrue_pat_b32(SV_VL8);
-  const svuint32_t offsetVec = svld1_u32(pg, offset);
-  const svuint32_t indices = svlsr_n_u32_x(pg, offsetVec, 5);
-  const svuint32_t srcNullVec =
-      svld1_gather_u32index(pg, reinterpret_cast<const uint32_t*>(srcAddr), indices);
-  const svuint32_t offsetIn4Byte = svand_n_u32_x(pg, offsetVec, 0x1F);
-  const svuint32_t bitVec = svlsr_u32_x(pg, srcNullVec, offsetIn4Byte);
-  const svuint32_t shifts = svindex_u32(0, 1);
-  const svuint32_t contribution = svlsl_u32_x(pg, svand_n_u32_x(pg, bitVec, 1), shifts);
-  return static_cast<uint8_t>(svaddv_u32(pg, contribution));
+  return detail::extractBitsToByteSve(srcAddr, offset);
 #else
   return extractBitsToByte(srcAddr, offset);
 #endif

@@ -73,7 +73,7 @@ function get_cxx_flags {
     ;;
 
     "aarch64")
-      echo -n "-mcpu=neoverse-n1 -std=c++17 $ADDITIONAL_FLAGS"
+      echo -n "-mcpu=neoverse-n1 -std=c++20 $ADDITIONAL_FLAGS"
     ;;
   *)
     echo -n "Architecture not supported!"
@@ -108,7 +108,7 @@ function wget_and_untar {
   local DIR=$2
   mkdir -p "${DIR}"
   pushd "${DIR}"
-  curl -L "${URL}" > $2.tar.gz
+  curl -L -k "${URL}" > $2.tar.gz
   tar -xz --strip-components=1 -f $2.tar.gz
   popd
 }
@@ -128,7 +128,7 @@ function cmake_install {
   cmake -Wno-dev -B"${BINARY_DIR}" \
     -GNinja \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DCMAKE_CXX_STANDARD=17 \
+    -DCMAKE_CXX_STANDARD=20 \
     "${INSTALL_PREFIX+-DCMAKE_PREFIX_PATH=}${INSTALL_PREFIX-}" \
     "${INSTALL_PREFIX+-DCMAKE_INSTALL_PREFIX=}${INSTALL_PREFIX-}" \
     -DCMAKE_CXX_FLAGS="$COMPILER_FLAGS" \
@@ -173,6 +173,8 @@ function setup_linux {
       exit 1
       ;;
     esac
+  elif [[ "$LINUX_DISTRIBUTION" == "openEuler" ]]; then
+ 	  scripts/setup-centos9.sh
   elif [[ "$LINUX_DISTRIBUTION" == "alinux" ]]; then
     case "${LINUX_VERSION_ID:0:1}" in
     2)

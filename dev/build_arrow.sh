@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# 本仓库定制：支持 LOCAL_DEPS_DIR，若该目录下存在 apache-arrow-15.0.0.tar.gz 则优先使用，避免从 archive.apache.org 拉取。
 
 set -exu
 
@@ -25,7 +26,9 @@ BUILD_TYPE=Release
 
 function prepare_arrow_build() {
   mkdir -p ${ARROW_PREFIX}/../ && pushd ${ARROW_PREFIX}/../ && sudo rm -rf arrow_ep/
-  wget_and_untar https://archive.apache.org/dist/arrow/arrow-${VELOX_ARROW_BUILD_VERSION}/apache-arrow-${VELOX_ARROW_BUILD_VERSION}.tar.gz arrow_ep
+  url="https://archive.apache.org/dist/arrow/arrow-${VELOX_ARROW_BUILD_VERSION}/apache-arrow-${VELOX_ARROW_BUILD_VERSION}.tar.gz"
+ 	[[ -n "${LOCAL_DEPS_DIR:-}" && -f "${LOCAL_DEPS_DIR}/apache-arrow-${VELOX_ARROW_BUILD_VERSION}.tar.gz" ]] && url="file://${LOCAL_DEPS_DIR}/apache-arrow-${VELOX_ARROW_BUILD_VERSION}.tar.gz"
+ 	wget_and_untar "$url" arrow_ep
   cd arrow_ep
   patch -p1 < $CURRENT_DIR/../ep/build-velox/src/modify_arrow.patch
   patch -p1 < $CURRENT_DIR/../ep/build-velox/src/modify_arrow_dataset_scan_option.patch

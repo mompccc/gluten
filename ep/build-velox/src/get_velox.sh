@@ -165,6 +165,7 @@ fi
 #sync submodules
 git submodule sync --recursive
 git submodule update --init --recursive
+sed -i 's/curl -L "\${URL}"/curl -L -k "\${URL}"/' ${VELOX_SOURCE_DIR}/scripts/setup-helper-functions.sh
 
 function apply_compilation_fixes {
   current_dir=$1

@@ -16,6 +16,7 @@
  */
 
 #include "VeloxHashShuffleWriter.h"
+#include "shuffle/simd.h"
 #include "memory/ArrowMemory.h"
 #include "memory/VeloxColumnarBatch.h"
 #include "memory/VeloxMemoryManager.h"
@@ -503,92 +504,60 @@ arrow::Status VeloxHashShuffleWriter::splitFixedWidthValueBuffer(const facebook:
 }
 
 arrow::Status VeloxHashShuffleWriter::splitBoolType(const uint8_t* srcAddr, const std::vector<uint8_t*>& dstAddrs) {
-  // assume batch size = 32k; reducer# = 4K; row/reducer = 8
   for (auto& pid : partitionUsed_) {
-    // set the last byte
     auto dstaddr = dstAddrs[pid];
     if (dstaddr != nullptr) {
-      auto r = partition2RowOffsetBase_[pid]; /*8k*/
-      auto size = partition2RowOffsetBase_[pid + 1];
-      auto dstOffset = partitionBufferBase_[pid];
-      auto dstOffsetInByte = (8 - (dstOffset & 0x7)) & 0x7;
-      auto dstIdxByte = dstOffsetInByte;
-      auto dst = dstaddr[dstOffset >> 3];
-
-      for (; r < size && dstIdxByte > 0; r++, dstIdxByte--) {
-        auto srcOffset = rowOffset2RowId_[r]; /*16k*/
-        auto src = srcAddr[srcOffset >> 3];
-        src = src >> (srcOffset & 7) | 0xfe; // get the bit in bit 0, other bits set to 1
-#if defined(__x86_64__)
-        src = __rolb(src, 8 - dstIdxByte);
-#else
-        src = rotateLeft(src, (8 - dstIdxByte));
-#endif
-        dst = dst & src; // only take the useful bit.
-      }
-      dstaddr[dstOffset >> 3] = dst;
-      if (r == size) {
-        continue;
-      }
-      dstOffset += dstOffsetInByte;
-      // now dst_offset is 8 aligned
-      for (; r + 8 < size; r += 8) {
-        uint8_t src = 0;
-        auto srcOffset = rowOffset2RowId_[r]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        // PREFETCHT0((&(srcAddr)[(srcOffset >> 3) + 64]));
-        dst = src >> (srcOffset & 7) | 0xfe; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 1]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 1 | 0xfd; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 2]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 2 | 0xfb; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 3]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 3 | 0xf7; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 4]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 4 | 0xef; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 5]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 5 | 0xdf; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 6]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 6 | 0xbf; // get the bit in bit 0, other bits set to 1
-
-        srcOffset = rowOffset2RowId_[r + 7]; /*16k*/
-        src = srcAddr[srcOffset >> 3];
-        dst &= src >> (srcOffset & 7) << 7 | 0x7f; // get the bit in bit 0, other bits set to 1
-
-        dstaddr[dstOffset >> 3] = dst;
-        dstOffset += 8;
-        //_mm_prefetch(dstaddr + (dst_offset >> 3) + 64, _MM_HINT_T0);
-      }
-      // last byte, set it to 0xff is ok
-      dst = 0xff;
-      dstIdxByte = 0;
-      for (; r < size; r++, dstIdxByte++) {
-        auto srcOffset = rowOffset2RowId_[r]; /*16k*/
-        auto src = srcAddr[srcOffset >> 3];
-        src = src >> (srcOffset & 7) | 0xfe; // get the bit in bit 0, other bits set to 1
-#if defined(__x86_64__)
-        src = __rolb(src, dstIdxByte);
-#else
-        src = rotateLeft(src, dstIdxByte);
-#endif
-        dst = dst & src; // only take the useful bit.
-      }
-      dstaddr[dstOffset >> 3] = dst;
+      splitBoolTypeInternal(srcAddr, dstaddr, pid);
     }
   }
   return arrow::Status::OK();
+}
+
+void VeloxHashShuffleWriter::splitBoolTypeInternal(const uint8_t* srcAddr, uint8_t* dstaddr, uint32_t pid) {
+  auto r = partition2RowOffsetBase_[pid];
+  auto size = partition2RowOffsetBase_[pid + 1];
+  auto dstOffset = partitionBufferBase_[pid];
+  auto dstOffsetInByte = (8 - (dstOffset & 0x7)) & 0x7;
+  auto dstIdxByte = dstOffsetInByte;
+  auto dst = dstaddr[dstOffset >> 3];
+
+  for (; r < size && dstIdxByte > 0; r++, dstIdxByte--) {
+    auto srcOffset = rowOffset2RowId_[r];
+    auto src = srcAddr[srcOffset >> 3];
+    src = src >> (srcOffset & 7) | 0xfe;
+#if defined(__x86_64__)
+    src = __rolb(src, 8 - dstIdxByte);
+#else
+    src = rotateLeft(src, (8 - dstIdxByte));
+#endif
+    dst = dst & src;
+  }
+  dstaddr[dstOffset >> 3] = dst;
+  if (r == size) {
+    return;
+  }
+  dstOffset += dstOffsetInByte;
+  // now dst_offset is 8 aligned
+  for (; r + 8 < size; r += 8) {
+    dst = extractBitsToByteSimd(srcAddr, &rowOffset2RowId_[r]);
+    dstaddr[dstOffset >> 3] = dst;
+    dstOffset += 8;
+  }
+  // last byte, set it to 0xff is ok
+  dst = 0xff;
+  dstIdxByte = 0;
+  for (; r < size; r++, dstIdxByte++) {
+    auto srcOffset = rowOffset2RowId_[r];
+    auto src = srcAddr[srcOffset >> 3];
+    src = src >> (srcOffset & 7) | 0xfe;
+#if defined(__x86_64__)
+    src = __rolb(src, dstIdxByte);
+#else
+    src = rotateLeft(src, dstIdxByte);
+#endif
+    dst = dst & src;
+  }
+  dstaddr[dstOffset >> 3] = dst;
 }
 
 arrow::Status VeloxHashShuffleWriter::splitValidityBuffer(const facebook::velox::RowVector& rv) {

@@ -233,6 +233,8 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
 
   arrow::Status splitBoolType(const uint8_t* srcAddr, const std::vector<uint8_t*>& dstAddrs);
 
+  void splitBoolTypeInternal(const uint8_t* srcAddr, uint8_t* dstaddr, uint32_t pid);
+
   arrow::Status splitValidityBuffer(const facebook::velox::RowVector& rv);
 
   arrow::Status splitBinaryArray(const facebook::velox::RowVector& rv);

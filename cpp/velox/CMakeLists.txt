@@ -181,6 +181,11 @@ endif()
 
 add_library(velox SHARED ${VELOX_SRCS})
 
+option(ENABLE_ARM_SVE "Enable ARM SVE SIMD for shuffle on aarch64 (e.g. Kunpeng 920)" ON)
+if(ENABLE_ARM_SVE AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64|arm64")
+  target_compile_options(velox PRIVATE -march=armv8.2-a+sve)
+endif()
+
 if(ENABLE_GLUTEN_VCPKG AND NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
   # Hide some symbols to avoid conflict.
   target_link_options(

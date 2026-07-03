@@ -18,6 +18,7 @@
 #include "utils/Compression.h"
 
 #include "Exception.h"
+#include "utils/AdaptiveParallelZstdCodec.h"
 
 #ifdef GLUTEN_ENABLE_QAT
 #include "utils/qat/QatCodec.h"
@@ -38,7 +39,10 @@ createArrowIpcCodec(arrow::Compression::type compressedType, CodecBackend codecB
     } break;
     case arrow::Compression::ZSTD: {
       if (codecBackend == CodecBackend::NONE) {
-        GLUTEN_ASSIGN_OR_THROW(codec, arrow::util::Codec::Create(compressedType, compressionLevel));
+        // Adaptive parallel ZSTD: single-thread for buffers < 2MB,
+        // ZSTD_c_nbWorkers=2 for buffers >= 2MB. Output is standard zstd
+        // frame, byte-compatible with Arrow's default ZSTD codec.
+        codec = makeAdaptiveParallelZstdCodec(compressionLevel);
       } else if (codecBackend == CodecBackend::QAT) {
 #if defined(GLUTEN_ENABLE_QAT)
         codec = qat::makeDefaultQatZstdCodec();

@@ -41,6 +41,12 @@ static constexpr int32_t kDefaultSortBufferSize = 4096;
 static constexpr int64_t kDefaultReadBufferSize = 1 << 20;
 static constexpr int64_t kDefaultShuffleFileBufferSize = 32 << 10;
 
+// RowVector mode: concat multiple column buffers into length+value before
+// compressing, reducing compress calls from O(columns) to O(1). Aligned with
+// bolt kDefaultRowVectorModeCompressionMinColumns/MaxBufferSize.
+static constexpr int32_t kDefaultRowVectorModeMinColumns = 20;
+static constexpr int64_t kDefaultRowVectorModeMaxBufferSize = 5 * 1024 * 1024;
+
 enum ShuffleWriterType { kHashShuffle, kSortShuffle, kRssSortShuffle };
 enum PartitionWriterType { kLocal, kRss };
 enum SortAlgorithm { kRadixSort, kQuickSort };
@@ -79,6 +85,12 @@ struct PartitionWriterOptions {
   CodecBackend codecBackend = CodecBackend::NONE;
   int32_t compressionLevel = arrow::util::kUseDefaultCompressionLevel;
   CompressionMode compressionMode = CompressionMode::BUFFER;
+
+  // RowVector mode thresholds. When numColumns >= minColumns and total buffer
+  // size <= maxBufferSize (and no complex types), payload is written in
+  // RowVector mode (concat length+value). Otherwise BUFFER mode.
+  int32_t rowVectorModeMinColumns = kDefaultRowVectorModeMinColumns;
+  int64_t rowVectorModeMaxBufferSize = kDefaultRowVectorModeMaxBufferSize;
 
   bool bufferedWrite = kEnableBufferedWrite;
 

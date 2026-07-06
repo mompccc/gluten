@@ -112,7 +112,9 @@ class LocalPartitionWriter::PayloadMerger {
         hasComplexType_(hasComplexType),
         compressionThreshold_(options.compressionThreshold),
         mergeBufferSize_(options.mergeBufferSize),
-        mergeBufferMinSize_(options.mergeBufferSize * options.mergeThreshold) {}
+        mergeBufferMinSize_(options.mergeBufferSize * options.mergeThreshold),
+        rowVectorModeMinColumns_(options.rowVectorModeMinColumns),
+        rowVectorModeMaxBufferSize_(options.rowVectorModeMaxBufferSize) {}
 
   arrow::Result<std::vector<std::unique_ptr<BlockPayload>>>
   merge(uint32_t partitionId, std::unique_ptr<InMemoryPayload> append, bool reuseBuffers) {
@@ -157,7 +159,11 @@ class LocalPartitionWriter::PayloadMerger {
               codec_ != nullptr && lastPayload->numRows() >= compressionThreshold_ ? Payload::kCompressed
                                                                                    : Payload::kUncompressed,
               pool_,
-              codec_));
+              codec_,
+              nullptr,
+              codec_ != nullptr && lastPayload->numRows() >= compressionThreshold_
+                  ? decidePayloadMode(*lastPayload)
+                  : PayloadMode::kBuffer));
       RETURN_NOT_OK(cacheOrFinish());
       return merged;
     }
@@ -179,7 +185,10 @@ class LocalPartitionWriter::PayloadMerger {
             codec_ != nullptr && payload->numRows() >= compressionThreshold_ ? Payload::kCompressed
                                                                              : Payload::kUncompressed,
             pool_,
-            codec_));
+            codec_,
+            nullptr,
+            codec_ != nullptr && payload->numRows() >= compressionThreshold_ ? decidePayloadMode(*payload)
+                                                                             : PayloadMode::kBuffer));
     return merged;
   }
 
@@ -204,7 +213,8 @@ class LocalPartitionWriter::PayloadMerger {
     auto payloadType =
         (codec_ != nullptr && numRows >= compressionThreshold_) ? Payload::kToBeCompressed : Payload::kUncompressed;
     auto payload = std::move(partitionMergePayload_[partitionId]);
-    return payload->toBlockPayload(payloadType, pool_, codec_);
+    auto mode = payloadType == Payload::kToBeCompressed ? decidePayloadMode(*payload) : PayloadMode::kBuffer;
+    return payload->toBlockPayload(payloadType, pool_, codec_, nullptr, mode);
   }
 
   bool hasMerged(uint32_t partitionId) {
@@ -219,6 +229,8 @@ class LocalPartitionWriter::PayloadMerger {
   int32_t compressionThreshold_;
   int32_t mergeBufferSize_;
   int32_t mergeBufferMinSize_;
+  int32_t rowVectorModeMinColumns_;
+  int64_t rowVectorModeMaxBufferSize_;
   std::unordered_map<uint32_t, std::unique_ptr<InMemoryPayload>> partitionMergePayload_;
   std::optional<uint32_t> partitionInMerge_;
 
@@ -254,6 +266,24 @@ class LocalPartitionWriter::PayloadMerger {
     return arrow::Status::OK();
   }
 
+  // Decide RowVector vs BUFFER mode. RowVector when: compression enabled,
+  // no complex types, column count >= threshold, and total buffer size <=
+  // threshold. Aligned with bolt's assembleBuffersGeneral decision.
+  PayloadMode decidePayloadMode(const InMemoryPayload& payload) {
+    if (codec_ == nullptr || hasComplexType_) {
+      return PayloadMode::kBuffer;
+    }
+    uint32_t numBuffers = payload.numBuffers();
+    if (static_cast<int32_t>(numBuffers) < rowVectorModeMinColumns_) {
+      return PayloadMode::kBuffer;
+    }
+    int64_t totalSize = payload.rawSize();
+    if (totalSize > rowVectorModeMaxBufferSize_ || totalSize <= 0) {
+      return PayloadMode::kBuffer;
+    }
+    return PayloadMode::kRowVector;
+  }
+
   arrow::Result<std::unique_ptr<BlockPayload>> createBlockPayload(
       std::unique_ptr<InMemoryPayload> inMemoryPayload,
       bool reuseBuffers) {
@@ -262,10 +292,11 @@ class LocalPartitionWriter::PayloadMerger {
       // For uncompressed buffers, need to copy before caching.
       RETURN_NOT_OK(inMemoryPayload->copyBuffers(pool_));
     }
+    auto mode = createCompressed ? decidePayloadMode(*inMemoryPayload) : PayloadMode::kBuffer;
     ARROW_ASSIGN_OR_RAISE(
         auto payload,
         inMemoryPayload->toBlockPayload(
-            createCompressed ? Payload::kCompressed : Payload::kUncompressed, pool_, codec_));
+            createCompressed ? Payload::kCompressed : Payload::kUncompressed, pool_, codec_, nullptr, mode));
     return payload;
   }
 };

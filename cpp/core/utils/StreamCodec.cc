@@ -185,8 +185,13 @@ std::unique_ptr<StreamCompressor> StreamCompressor::create(
   switch (compressionType) {
     case arrow::Compression::ZSTD:
       return std::make_unique<ZstdStreamCompressor>(compressionLevel);
-    case arrow::Compression::LZ4_FRAME:
-      return std::make_unique<Lz4FrameStreamCompressor>(compressionLevel);
+    // LZ4_FRAME: intentionally NOT using streaming. Flame-graph profiling
+    // showed LZ4 streaming (strategy 1: compress-then-write) regresses ~2.6%
+    // vs one-shot, because LZ4 compression is so fast that the extra buffer
+    // indirection becomes net overhead. LZ4 falls back to one-shot
+    // compressBuffer. (ZSTD streaming is retained; ZSTD compression is slow
+    // enough that streaming overhead is relatively negligible, and it paves
+    // the way for RowVector mode.)
     default:
       return nullptr; // caller falls back to one-shot
   }

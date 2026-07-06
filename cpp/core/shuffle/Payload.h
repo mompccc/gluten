@@ -26,6 +26,10 @@
 
 namespace gluten {
 
+// Compression layout mode written into the block header. Aligned with bolt
+// Payload::Mode. BUFFER = per-buffer compress; ROWVECTOR = concat length+value.
+enum class PayloadMode : uint8_t { kBuffer = 0, kRowVector = 2 };
+
 class Payload {
  public:
   enum Type : uint8_t { kCompressed = 1, kUncompressed = 2, kToBeCompressed = 3, kRaw = 4 };
@@ -85,13 +89,21 @@ class BlockPayload final : public Payload {
       const std::vector<bool>* isValidityBuffer,
       arrow::MemoryPool* pool,
       arrow::util::Codec* codec,
-      std::shared_ptr<arrow::Buffer> compressed);
+      std::shared_ptr<arrow::Buffer> compressed,
+      PayloadMode mode = PayloadMode::kBuffer);
 
   static arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> deserialize(
       arrow::io::InputStream* inputStream,
       const std::shared_ptr<arrow::util::Codec>& codec,
       arrow::MemoryPool* pool,
       uint32_t& numRows,
+      int64_t& deserializeTime,
+      int64_t& decompressTime);
+
+  static arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> deserializeRowVectorModeBuffers(
+      arrow::io::InputStream* inputStream,
+      const std::shared_ptr<arrow::util::Codec>& codec,
+      arrow::MemoryPool* pool,
       int64_t& deserializeTime,
       int64_t& decompressTime);
 
@@ -112,14 +124,20 @@ class BlockPayload final : public Payload {
       std::vector<std::shared_ptr<arrow::Buffer>> buffers,
       const std::vector<bool>* isValidityBuffer,
       arrow::MemoryPool* pool,
-      arrow::util::Codec* codec)
-      : Payload(type, numRows, isValidityBuffer), buffers_(std::move(buffers)), pool_(pool), codec_(codec) {}
+      arrow::util::Codec* codec,
+      PayloadMode mode = PayloadMode::kBuffer)
+      : Payload(type, numRows, isValidityBuffer),
+        buffers_(std::move(buffers)),
+        pool_(pool),
+        codec_(codec),
+        mode_(mode) {}
 
   void setCompressionTime(int64_t compressionTime);
 
   std::vector<std::shared_ptr<arrow::Buffer>> buffers_;
   arrow::MemoryPool* pool_;
   arrow::util::Codec* codec_;
+  PayloadMode mode_{PayloadMode::kBuffer};
 };
 
 class InMemoryPayload final : public Payload {
@@ -141,7 +159,8 @@ class InMemoryPayload final : public Payload {
       Payload::Type payloadType,
       arrow::MemoryPool* pool,
       arrow::util::Codec* codec,
-      std::shared_ptr<arrow::Buffer> compressed = nullptr);
+      std::shared_ptr<arrow::Buffer> compressed = nullptr,
+      PayloadMode mode = PayloadMode::kBuffer);
 
   arrow::Status copyBuffers(arrow::MemoryPool* pool);
 

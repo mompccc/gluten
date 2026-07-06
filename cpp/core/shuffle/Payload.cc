@@ -90,6 +90,58 @@ arrow::Result<int64_t> compressBuffer(
   return kCompressedBufferHeaderLength + compressedLength;
 }
 
+// Concatenate column buffers into [lengthBuffer, valueBuffer] for RowVector
+// mode. Aligned with bolt BlockPayload::concatBuffer (Payload.cpp:343-407).
+//
+// lengthBuffer (int64[bufferCount+3]):
+//   [0] = total uncompressed size of valueBuffer
+//   [1] = bufferCount (number of source buffers)
+//   [2] = hasComplexType (always 0 in this version; complex types fall back
+//         to BUFFER mode before reaching here)
+//   [3..] = each buffer's size, or kNullBuffer/kZeroLengthBuffer sentinel
+//
+// valueBuffer = contiguous concat of non-null non-empty source buffers.
+arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> concatBuffersRowVector(
+    std::vector<std::shared_ptr<arrow::Buffer>>&& buffers,
+    arrow::MemoryPool* pool) {
+  auto sourceBuffers = std::move(buffers);
+  auto bufferCount = static_cast<int64_t>(sourceBuffers.size());
+
+  // Allocate length buffer.
+  ARROW_ASSIGN_OR_RAISE(
+      auto lengthBuffer, arrow::AllocateResizableBuffer((bufferCount + 3) * sizeof(int64_t), pool));
+  auto* lengthPtr = reinterpret_cast<int64_t*>(lengthBuffer->mutable_data());
+
+  // Compute total uncompressed size.
+  int64_t totalSize = std::accumulate(sourceBuffers.begin(), sourceBuffers.end(), 0LL, [](auto sum, const auto& b) {
+    return b ? sum + b->size() : sum;
+  });
+
+  // Allocate value buffer.
+  ARROW_ASSIGN_OR_RAISE(auto valueBuffer, arrow::AllocateResizableBuffer(totalSize, pool));
+  auto* valuePtr = valueBuffer->mutable_data();
+
+  // Fill length buffer + concat value buffer.
+  int64_t pos = 0;
+  lengthPtr[pos++] = totalSize;
+  lengthPtr[pos++] = bufferCount;
+  lengthPtr[pos++] = 0; // hasComplexType = 0 (complex types use BUFFER mode)
+  int64_t offset = 0;
+  for (const auto& buffer : sourceBuffers) {
+    if (!buffer) {
+      lengthPtr[pos++] = kNullBuffer;
+    } else if (buffer->size() == 0) {
+      lengthPtr[pos++] = kZeroLengthBuffer;
+    } else {
+      std::memcpy(valuePtr + offset, buffer->data(), buffer->size());
+      lengthPtr[pos++] = static_cast<int64_t>(buffer->size());
+      offset += buffer->size();
+    }
+  }
+  return std::vector<std::shared_ptr<arrow::Buffer>>{
+      std::move(lengthBuffer), std::move(valueBuffer)};
+}
+
 // Compress a buffer via the streaming API into a newly allocated buffer.
 // Returns the compressed bytes, or nullptr if streaming is unsupported for this
 // codec type (caller falls back to one-shot compressBuffer).
@@ -266,10 +318,19 @@ arrow::Result<std::unique_ptr<BlockPayload>> BlockPayload::fromBuffers(
     const std::vector<bool>* isValidityBuffer,
     arrow::MemoryPool* pool,
     arrow::util::Codec* codec,
-    std::shared_ptr<arrow::Buffer> compressed) {
+    std::shared_ptr<arrow::Buffer> compressed,
+    PayloadMode mode) {
   if (payloadType == Payload::Type::kCompressed) {
     Timer compressionTime;
     compressionTime.start();
+    // RowVector mode: concat all buffers into length+value first, reducing
+    // compress calls from O(buffers) to O(1)=2. Aligned with bolt concatBuffer.
+    if (mode == PayloadMode::kRowVector) {
+      ARROW_RETURN_IF(compressed != nullptr, arrow::Status::Invalid("RowVector mode does not support pre-allocated compressed buffer."));
+      std::vector<std::shared_ptr<arrow::Buffer>> concatBuffers;
+      ARROW_ASSIGN_OR_RAISE(concatBuffers, concatBuffersRowVector(std::move(buffers), pool));
+      buffers = std::move(concatBuffers);
+    }
     // Compress.
     auto maxLength = maxCompressedLength(buffers, codec);
     std::shared_ptr<arrow::Buffer> compressedBuffer;
@@ -303,12 +364,12 @@ arrow::Result<std::unique_ptr<BlockPayload>> BlockPayload::fromBuffers(
     }
     compressionTime.stop();
     auto payload = std::unique_ptr<BlockPayload>(
-        new BlockPayload(Type::kCompressed, numRows, {compressedBuffer}, isValidityBuffer, pool, codec));
+        new BlockPayload(Type::kCompressed, numRows, {compressedBuffer}, isValidityBuffer, pool, codec, mode));
     payload->setCompressionTime(compressionTime.realTimeUsed());
     return payload;
   }
   return std::unique_ptr<BlockPayload>(
-      new BlockPayload(payloadType, numRows, std::move(buffers), isValidityBuffer, pool, codec));
+      new BlockPayload(payloadType, numRows, std::move(buffers), isValidityBuffer, pool, codec, mode));
 }
 
 arrow::Status BlockPayload::serialize(arrow::io::OutputStream* outputStream) {
@@ -317,6 +378,8 @@ arrow::Status BlockPayload::serialize(arrow::io::OutputStream* outputStream) {
       ScopedTimer timer(&writeTime_);
       RETURN_NOT_OK(outputStream->Write(&kUncompressedType, sizeof(Type)));
       RETURN_NOT_OK(outputStream->Write(&numRows_, sizeof(uint32_t)));
+      auto mode = static_cast<uint8_t>(PayloadMode::kBuffer);
+      RETURN_NOT_OK(outputStream->Write(&mode, sizeof(uint8_t)));
       uint32_t numBuffers = buffers_.size();
       RETURN_NOT_OK(outputStream->Write(&numBuffers, sizeof(uint32_t)));
       for (auto& buffer : buffers_) {
@@ -336,6 +399,8 @@ arrow::Status BlockPayload::serialize(arrow::io::OutputStream* outputStream) {
         ScopedTimer timer(&writeTime_);
         RETURN_NOT_OK(outputStream->Write(&kCompressedType, sizeof(Type)));
         RETURN_NOT_OK(outputStream->Write(&numRows_, sizeof(uint32_t)));
+        auto mode = static_cast<uint8_t>(mode_);
+        RETURN_NOT_OK(outputStream->Write(&mode, sizeof(uint8_t)));
         uint32_t numBuffers = buffers_.size();
         RETURN_NOT_OK(outputStream->Write(&numBuffers, sizeof(uint32_t)));
       }
@@ -347,8 +412,16 @@ arrow::Status BlockPayload::serialize(arrow::io::OutputStream* outputStream) {
       ScopedTimer timer(&writeTime_);
       RETURN_NOT_OK(outputStream->Write(&kCompressedType, sizeof(Type)));
       RETURN_NOT_OK(outputStream->Write(&numRows_, sizeof(uint32_t)));
-      uint32_t buffers = numBuffers();
-      RETURN_NOT_OK(outputStream->Write(&buffers, sizeof(uint32_t)));
+      auto mode = static_cast<uint8_t>(mode_);
+      RETURN_NOT_OK(outputStream->Write(&mode, sizeof(uint8_t)));
+      // For RowVector mode, buffers_[0] already contains the packed
+      // compress(lengthBuffer)+compress(valueBuffer) blob; write it directly
+      // (no numBuffers prefix — count is derived from schema on read).
+      // For BUFFER mode, write numBuffers then the blob.
+      if (mode_ == PayloadMode::kBuffer) {
+        uint32_t buffers = numBuffers();
+        RETURN_NOT_OK(outputStream->Write(&buffers, sizeof(uint32_t)));
+      }
       RETURN_NOT_OK(outputStream->Write(std::move(buffers_[0])));
     } break;
     case Type::kRaw: {
@@ -370,6 +443,67 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> BlockPayload::readBufferAt(uint32_
   return std::move(buffers_[pos]);
 }
 
+arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> BlockPayload::deserializeRowVectorModeBuffers(
+    arrow::io::InputStream* inputStream,
+    const std::shared_ptr<arrow::util::Codec>& codec,
+    arrow::MemoryPool* pool,
+    int64_t& deserializeTime,
+    int64_t& decompressTime) {
+  // Read length buffer (compressed) then value buffer (compressed).
+  // Aligned with bolt BlockPayload::deserializeRowVectorModeBuffers.
+  std::shared_ptr<arrow::Buffer> lengthBuffer;
+  ARROW_ASSIGN_OR_RAISE(
+      lengthBuffer, readCompressedBuffer(inputStream, codec, pool, deserializeTime, decompressTime));
+  ARROW_RETURN_IF(
+      lengthBuffer == nullptr,
+      arrow::Status::Invalid("RowVector mode length buffer should not be nullptr"));
+
+  std::shared_ptr<arrow::Buffer> valueBuffer;
+  ARROW_ASSIGN_OR_RAISE(
+      valueBuffer, readCompressedBuffer(inputStream, codec, pool, deserializeTime, decompressTime));
+  ARROW_RETURN_IF(
+      valueBuffer == nullptr,
+      arrow::Status::Invalid("RowVector mode value buffer should not be nullptr"));
+
+  const auto* lengthPtr = reinterpret_cast<const int64_t*>(lengthBuffer->data());
+  int64_t uncompressLength = lengthPtr[0];
+  int64_t bufferCount = lengthPtr[1];
+  int64_t hasComplexType = lengthPtr[2];
+  ARROW_RETURN_IF(
+      uncompressLength != valueBuffer->size(),
+      arrow::Status::Invalid(
+          "RowVector uncompressLength " + std::to_string(uncompressLength) +
+          " != valueBuffer size " + std::to_string(valueBuffer->size())));
+
+  std::vector<std::shared_ptr<arrow::Buffer>> buffers;
+  buffers.reserve(static_cast<size_t>(bufferCount));
+  int64_t bufferOffset = 0;
+  for (auto i = 3; i < bufferCount + 3; ++i) {
+    if (lengthPtr[i] == kNullBuffer) {
+      buffers.push_back(nullptr);
+    } else if (lengthPtr[i] == kZeroLengthBuffer) {
+      buffers.push_back(zeroLengthNullBuffer());
+    } else {
+      buffers.push_back(arrow::SliceBuffer(valueBuffer, bufferOffset, lengthPtr[i]));
+      bufferOffset += lengthPtr[i];
+    }
+  }
+  ARROW_RETURN_IF(
+      bufferOffset != uncompressLength,
+      arrow::Status::Invalid(
+          "RowVector accumulated length " + std::to_string(bufferOffset) +
+          " != uncompressLength " + std::to_string(uncompressLength)));
+  if (hasComplexType) {
+    // Read the separately-compressed complex-type buffer (this version always
+    // falls back to BUFFER mode for complex types, so this should not trigger;
+    // included for forward compatibility).
+    buffers.emplace_back();
+    ARROW_ASSIGN_OR_RAISE(
+        buffers.back(), readCompressedBuffer(inputStream, codec, pool, deserializeTime, decompressTime));
+  }
+  return buffers;
+}
+
 arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> BlockPayload::deserialize(
     arrow::io::InputStream* inputStream,
     const std::shared_ptr<arrow::util::Codec>& codec,
@@ -385,11 +519,23 @@ arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> BlockPayload::deseria
     return kEmptyBuffers;
   }
   RETURN_NOT_OK(inputStream->Read(sizeof(uint32_t), &numRows));
-  uint32_t numBuffers;
-  RETURN_NOT_OK(inputStream->Read(sizeof(uint32_t), &numBuffers));
+  // Read mode byte (new header field).
+  uint8_t modeByte;
+  RETURN_NOT_OK(inputStream->Read(sizeof(uint8_t), &modeByte));
+  auto mode = static_cast<PayloadMode>(modeByte);
+  uint32_t numBuffers = 0;
+  if (mode != PayloadMode::kRowVector) {
+    RETURN_NOT_OK(inputStream->Read(sizeof(uint32_t), &numBuffers));
+  }
   timer.reset();
 
   bool isCompressionEnabled = type == Type::kCompressed;
+
+  // RowVector mode dispatch.
+  if (isCompressionEnabled && mode == PayloadMode::kRowVector) {
+    return deserializeRowVectorModeBuffers(inputStream, codec, pool, deserializeTime, decompressTime);
+  }
+
   std::vector<std::shared_ptr<arrow::Buffer>> buffers;
   buffers.reserve(numBuffers);
   for (auto i = 0; i < numBuffers; ++i) {
@@ -506,9 +652,10 @@ arrow::Result<std::unique_ptr<BlockPayload>> InMemoryPayload::toBlockPayload(
     Payload::Type payloadType,
     arrow::MemoryPool* pool,
     arrow::util::Codec* codec,
-    std::shared_ptr<arrow::Buffer> compressed) {
+    std::shared_ptr<arrow::Buffer> compressed,
+    PayloadMode mode) {
   return BlockPayload::fromBuffers(
-      payloadType, numRows_, std::move(buffers_), isValidityBuffer_, pool, codec, std::move(compressed));
+      payloadType, numRows_, std::move(buffers_), isValidityBuffer_, pool, codec, std::move(compressed), mode);
 }
 
 arrow::Status InMemoryPayload::serialize(arrow::io::OutputStream* outputStream) {
@@ -574,21 +721,27 @@ arrow::Status UncompressedDiskBlockPayload::serialize(arrow::io::OutputStream* o
           ", should be either Payload::kUncompressed or Payload::kToBeCompressed"));
   RETURN_NOT_OK(outputStream->Write(&kCompressedType, sizeof(kCompressedType)));
   RETURN_NOT_OK(outputStream->Write(&numRows_, sizeof(uint32_t)));
+  // Write mode byte (BUFFER mode for disk-spill re-compress path; RowVector is
+  // not applied here since buffers are read back one-by-one from disk).
+  auto modeByte = static_cast<uint8_t>(PayloadMode::kBuffer);
+  RETURN_NOT_OK(outputStream->Write(&modeByte, sizeof(uint8_t)));
 
   ARROW_ASSIGN_OR_RAISE(auto startPos, inputStream_->Tell());
 
-  // Discard original type and rows.
+  // Discard original header: type(1) | numRows(4) | mode(1) | numBuffers(4).
   Payload::Type type;
   uint32_t numRows;
+  uint8_t diskMode;
   ARROW_ASSIGN_OR_RAISE(auto bytes, inputStream_->Read(sizeof(Payload::Type), &type));
   ARROW_ASSIGN_OR_RAISE(bytes, inputStream_->Read(sizeof(uint32_t), &numRows));
+  ARROW_ASSIGN_OR_RAISE(bytes, inputStream_->Read(sizeof(uint8_t), &diskMode));
   uint32_t numBuffers = 0;
   ARROW_ASSIGN_OR_RAISE(bytes, inputStream_->Read(sizeof(uint32_t), &numBuffers));
   ARROW_RETURN_IF(bytes == 0 || numBuffers == 0, arrow::Status::Invalid("Cannot serialize payload with 0 buffers."));
   RETURN_NOT_OK(outputStream->Write(&numBuffers, sizeof(uint32_t)));
 
-  // Advance Payload::Type, rows and numBuffers.
-  auto readPos = startPos + sizeof(Payload::Type) + sizeof(uint32_t) + sizeof(uint32_t);
+  // Advance Payload::Type, rows, mode and numBuffers.
+  auto readPos = startPos + sizeof(Payload::Type) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t);
   while (readPos - startPos < rawSize_) {
     ARROW_ASSIGN_OR_RAISE(auto uncompressed, readUncompressedBuffer());
     ARROW_ASSIGN_OR_RAISE(readPos, inputStream_->Tell());

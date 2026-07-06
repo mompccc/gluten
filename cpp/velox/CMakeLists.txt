@@ -75,6 +75,14 @@ set(VELOX_COMPONENTS_PATH "${VELOX_BUILD_PATH}/velox")
 
 function(import_library TARGET_NAME LIB_PATH)
   if(NOT EXISTS ${LIB_PATH})
+    # Tolerate missing velox test libraries (built only when velox_ep is
+    # configured with VELOX_ENABLE_TESTS). Non-test libs are still fatal.
+    if(LIB_PATH MATCHES "/tests/")
+      message(WARNING "Velox test library not found, skipping: ${LIB_PATH}")
+      add_library(${TARGET_NAME} STATIC IMPORTED)
+      set_target_properties(${TARGET_NAME} PROPERTIES IMPORTED_LOCATION "")
+      return()
+    endif()
     message(FATAL_ERROR "Library does not exist: ${LIB_PATH}")
   endif()
   add_library(${TARGET_NAME} STATIC IMPORTED)

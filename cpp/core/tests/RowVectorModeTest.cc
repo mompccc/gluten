@@ -20,6 +20,8 @@
 #include <arrow/buffer.h>
 #include <arrow/io/memory.h>
 #include <arrow/memory_pool.h>
+#include <arrow/result.h>
+#include <arrow/status.h>
 #include <arrow/util/compression.h>
 #include <gtest/gtest.h>
 
@@ -40,7 +42,8 @@ std::vector<std::shared_ptr<arrow::Buffer>> buildColumnBuffers(
   std::vector<std::shared_ptr<arrow::Buffer>> buffers;
   buffers.reserve(static_cast<size_t>(numColumns));
   for (int c = 0; c < numColumns; ++c) {
-    auto buf = arrow::AllocateResizableBuffer(bytesPerColumn, arrow::default_memory_pool()).ValueOrDie();
+    ARROW_ASSIGN_OR_RAISE(
+        auto buf, arrow::AllocateResizableBuffer(bytesPerColumn, arrow::default_memory_pool()));
     for (int64_t i = 0; i < bytesPerColumn; ++i) {
       buf->mutable_data()[i] = static_cast<uint8_t>((seed + c + i) % 13);
     }
@@ -55,14 +58,14 @@ void roundTripRowVector(
     const std::vector<std::shared_ptr<arrow::Buffer>>& originalBuffers,
     arrow::Compression::type codecType,
     int compressionLevel) {
-  ARROW_ASSIGN_OR_THROW(auto codec, arrow::util::Codec::Create(codecType, compressionLevel));
+  ARROW_ASSIGN_OR_RAISE(auto codec, arrow::util::Codec::Create(codecType, compressionLevel));
   auto pool = arrow::default_memory_pool();
 
   uint32_t numRows = 1000;
   std::vector<bool> isValidityBuffer(originalBuffers.size(), false);
 
   // Write: fromBuffers with RowVector mode -> serialize to a BufferOutputStream.
-  ARROW_ASSIGN_OR_THROW(
+  ARROW_ASSIGN_OR_RAISE(
       auto payload,
       BlockPayload::fromBuffers(
           Payload::Type::kCompressed,
@@ -74,16 +77,16 @@ void roundTripRowVector(
           nullptr,
           PayloadMode::kRowVector));
 
-  ARROW_ASSIGN_OR_THROW(auto outStream, arrow::io::BufferOutputStream::Create(1024, pool));
+  ARROW_ASSIGN_OR_RAISE(auto outStream, arrow::io::BufferOutputStream::Create(1024, pool));
   ASSERT_NOT_OK(payload->serialize(outStream.get()));
-  ARROW_ASSIGN_OR_THROW(auto writtenBuffer, outStream->Finish());
+  ARROW_ASSIGN_OR_RAISE(auto writtenBuffer, outStream->Finish());
 
   // Read: deserialize from the written buffer.
   auto inStream = std::make_shared<arrow::io::BufferReader>(writtenBuffer);
   uint32_t readNumRows = 0;
   int64_t deserializeTime = 0;
   int64_t decompressTime = 0;
-  ARROW_ASSIGN_OR_THROW(
+  ARROW_ASSIGN_OR_RAISE(
       auto readBuffers,
       BlockPayload::deserialize(inStream, codec, pool, readNumRows, deserializeTime, decompressTime));
 
@@ -122,33 +125,34 @@ TEST(RowVectorModeTest, Lz4RoundTrip25Columns) {
 // Test 3: RowVector with null and empty buffers interspersed.
 TEST(RowVectorModeTest, RowVectorWithNullAndEmptyBuffers) {
   auto buffers = buildColumnBuffers(22, 2048, 3);
-  buffers[5] = nullptr;               // null buffer
-  buffers[10] = arrow::AllocateResizableBuffer(0, arrow::default_memory_pool()).ValueOrDie(); // empty
+  buffers[5] = nullptr; // null buffer
+  ARROW_ASSIGN_OR_RAISE(
+      buffers[10], arrow::AllocateResizableBuffer(0, arrow::default_memory_pool())); // empty
   roundTripRowVector(buffers, arrow::Compression::ZSTD, 3);
 }
 
 // Test 4: BUFFER mode round-trip (mode=kBuffer) still works after header change.
 TEST(RowVectorModeTest, BufferModeRoundTripStillWorks) {
   auto buffers = buildColumnBuffers(5, 4096, 1); // few columns -> BUFFER mode
-  ARROW_ASSIGN_OR_THROW(auto codec, arrow::util::Codec::Create(arrow::Compression::ZSTD, 3));
+  ARROW_ASSIGN_OR_RAISE(auto codec, arrow::util::Codec::Create(arrow::Compression::ZSTD, 3));
   auto pool = arrow::default_memory_pool();
   uint32_t numRows = 1000;
   std::vector<bool> isValidityBuffer(buffers.size(), false);
 
-  ARROW_ASSIGN_OR_THROW(
+  ARROW_ASSIGN_OR_RAISE(
       auto payload,
       BlockPayload::fromBuffers(
           Payload::Type::kCompressed, numRows, std::vector<std::shared_ptr<arrow::Buffer>>(buffers),
           &isValidityBuffer, pool, codec.get(), nullptr, PayloadMode::kBuffer));
 
-  ARROW_ASSIGN_OR_THROW(auto outStream, arrow::io::BufferOutputStream::Create(1024, pool));
+  ARROW_ASSIGN_OR_RAISE(auto outStream, arrow::io::BufferOutputStream::Create(1024, pool));
   ASSERT_NOT_OK(payload->serialize(outStream.get()));
-  ARROW_ASSIGN_OR_THROW(auto writtenBuffer, outStream->Finish());
+  ARROW_ASSIGN_OR_RAISE(auto writtenBuffer, outStream->Finish());
 
   auto inStream = std::make_shared<arrow::io::BufferReader>(writtenBuffer);
   uint32_t readNumRows = 0;
   int64_t dt = 0, ddt = 0;
-  ARROW_ASSIGN_OR_THROW(
+  ARROW_ASSIGN_OR_RAISE(
       auto readBuffers, BlockPayload::deserialize(inStream, codec, pool, readNumRows, dt, ddt));
 
   EXPECT_EQ(readNumRows, numRows);

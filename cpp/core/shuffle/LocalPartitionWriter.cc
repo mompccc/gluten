@@ -269,7 +269,7 @@ class LocalPartitionWriter::PayloadMerger {
   // Decide RowVector vs BUFFER mode. RowVector when: compression enabled,
   // no complex types, column count >= threshold, and total buffer size <=
   // threshold. Aligned with bolt's assembleBuffersGeneral decision.
-  PayloadMode decidePayloadMode(const InMemoryPayload& payload) {
+  PayloadMode decidePayloadMode(InMemoryPayload& payload) {
     if (codec_ == nullptr || hasComplexType_) {
       return PayloadMode::kBuffer;
     }

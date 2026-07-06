@@ -56,7 +56,8 @@ void roundTripRowVector(
     const std::vector<std::shared_ptr<arrow::Buffer>>& originalBuffers,
     arrow::Compression::type codecType,
     int compressionLevel) {
-  auto codec = arrow::util::Codec::Create(codecType, compressionLevel).ValueOrDie();
+  auto codec = std::shared_ptr<arrow::util::Codec>(
+      arrow::util::Codec::Create(codecType, compressionLevel).ValueOrDie());
   auto pool = arrow::default_memory_pool();
 
   uint32_t numRows = 1000;
@@ -130,7 +131,8 @@ TEST(RowVectorModeTest, RowVectorWithNullAndEmptyBuffers) {
 // Test 4: BUFFER mode round-trip (mode=kBuffer) still works after header change.
 TEST(RowVectorModeTest, BufferModeRoundTripStillWorks) {
   auto buffers = buildColumnBuffers(5, 4096, 1); // few columns -> BUFFER mode
-  auto codec = arrow::util::Codec::Create(arrow::Compression::ZSTD, 3).ValueOrDie();
+  auto codec = std::shared_ptr<arrow::util::Codec>(
+      arrow::util::Codec::Create(arrow::Compression::ZSTD, 3).ValueOrDie());
   auto pool = arrow::default_memory_pool();
   uint32_t numRows = 1000;
   std::vector<bool> isValidityBuffer(buffers.size(), false);

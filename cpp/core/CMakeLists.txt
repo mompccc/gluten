@@ -127,6 +127,7 @@ set(SPARK_COLUMNAR_PLUGIN_SRCS
     shuffle/Utils.cc
     utils/Compression.cc
     utils/AdaptiveParallelZstdCodec.cc
+    utils/StreamCodec.cc
     utils/StringUtil.cc
     utils/ObjectStore.cc
     jni/JniError.cc

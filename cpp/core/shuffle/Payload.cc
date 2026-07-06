@@ -25,6 +25,7 @@
 #include "shuffle/Options.h"
 #include "shuffle/Utils.h"
 #include "utils/Exception.h"
+#include "utils/StreamCodec.h"
 #include "utils/Timer.h"
 
 namespace gluten {
@@ -89,6 +90,58 @@ arrow::Result<int64_t> compressBuffer(
   return kCompressedBufferHeaderLength + compressedLength;
 }
 
+// Compress a buffer via the streaming API into a newly allocated buffer.
+// Returns the compressed bytes, or nullptr if streaming is unsupported for this
+// codec type (caller falls back to one-shot compressBuffer).
+arrow::Result<std::shared_ptr<arrow::Buffer>> compressBufferStreaming(
+    const std::shared_ptr<arrow::Buffer>& buffer,
+    arrow::util::Codec* codec,
+    arrow::MemoryPool* pool) {
+  auto streamCompressor = StreamCompressor::create(codec->compression_type(), codec->compression_level());
+  if (streamCompressor == nullptr) {
+    // Unsupported codec type; caller will use one-shot path.
+    // Return a null shared_ptr with OK status (not an error).
+    return std::shared_ptr<arrow::Buffer>{};
+  }
+
+  ARROW_ASSIGN_OR_RAISE(
+      auto innerStream,
+      arrow::io::BufferOutputStream::Create(
+          streamCompressor->recommendedOutputSize(buffer->size()), pool));
+
+  const uint8_t* inPtr = buffer->data();
+  int64_t remaining = buffer->size();
+  // Chunked output buffer.
+  constexpr int64_t kChunk = 64 * 1024;
+  std::vector<uint8_t> outChunk(static_cast<size_t>(kChunk));
+
+  // Feed all input.
+  while (remaining > 0) {
+    auto r = streamCompressor->compress(inPtr, remaining, outChunk.data(), kChunk);
+    if (r.bytesRead == 0 && remaining > 0) {
+      // Output buffer full; flush what was written and retry.
+      RETURN_NOT_OK(innerStream->Write(outChunk.data(), r.bytesWritten));
+      continue;
+    }
+    inPtr += r.bytesRead;
+    remaining -= r.bytesRead;
+    if (r.bytesWritten > 0) {
+      RETURN_NOT_OK(innerStream->Write(outChunk.data(), r.bytesWritten));
+    }
+  }
+  // End stream.
+  while (true) {
+    auto e = streamCompressor->end(outChunk.data(), kChunk);
+    if (e.bytesWritten > 0) {
+      RETURN_NOT_OK(innerStream->Write(outChunk.data(), e.bytesWritten));
+    }
+    if (e.noMoreOutput) {
+      break;
+    }
+  }
+  return innerStream->Finish();
+}
+
 arrow::Status compressAndFlush(
     const std::shared_ptr<arrow::Buffer>& buffer,
     arrow::io::OutputStream* outputStream,
@@ -107,11 +160,35 @@ arrow::Status compressAndFlush(
     return arrow::Status::OK();
   }
   ScopedTimer timer(&compressTime);
+
+  // Try streaming compression first (ZSTD, LZ4 when available).
+  ARROW_ASSIGN_OR_RAISE(auto compressedBuffer, compressBufferStreaming(buffer, codec, pool));
+
+  int64_t compressedSize;
+  if (compressedBuffer != nullptr) {
+    // Streaming path succeeded.
+    compressedSize = static_cast<int64_t>(compressedBuffer->size());
+    if (compressedSize >= buffer->size()) {
+      // Negative optimization: store uncompressed.
+      timer.switchTo(&writeTime);
+      int64_t header[2] = {kUncompressedBuffer, static_cast<int64_t>(buffer->size())};
+      RETURN_NOT_OK(outputStream->Write(header, sizeof(header)));
+      RETURN_NOT_OK(outputStream->Write(buffer->data(), buffer->size()));
+      return arrow::Status::OK();
+    }
+    timer.switchTo(&writeTime);
+    int64_t header[2] = {compressedSize, static_cast<int64_t>(buffer->size())};
+    RETURN_NOT_OK(outputStream->Write(header, sizeof(header)));
+    RETURN_NOT_OK(outputStream->Write(compressedBuffer->data(), compressedSize));
+    return arrow::Status::OK();
+  }
+
+  // Fallback: one-shot path (for codecs without streaming support, e.g. GZIP/QAT).
   auto maxCompressedLength = codec->MaxCompressedLen(buffer->size(), buffer->data());
   ARROW_ASSIGN_OR_RAISE(
       auto compressed, arrow::AllocateResizableBuffer(sizeof(int64_t) * 2 + maxCompressedLength, pool));
   auto output = compressed->mutable_data();
-  ARROW_ASSIGN_OR_RAISE(auto compressedSize, compressBuffer(buffer, output, maxCompressedLength, codec));
+  ARROW_ASSIGN_OR_RAISE(compressedSize, compressBuffer(buffer, output, maxCompressedLength, codec));
 
   timer.switchTo(&writeTime);
   RETURN_NOT_OK(outputStream->Write(compressed->data(), compressedSize));

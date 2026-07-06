@@ -401,8 +401,12 @@ arrow::Status BlockPayload::serialize(arrow::io::OutputStream* outputStream) {
         RETURN_NOT_OK(outputStream->Write(&numRows_, sizeof(uint32_t)));
         auto mode = static_cast<uint8_t>(mode_);
         RETURN_NOT_OK(outputStream->Write(&mode, sizeof(uint8_t)));
-        uint32_t numBuffers = buffers_.size();
-        RETURN_NOT_OK(outputStream->Write(&numBuffers, sizeof(uint32_t)));
+        // For RowVector mode, do NOT write numBuffers (reader derives count
+        // from the length buffer). BUFFER mode writes numBuffers.
+        if (mode_ == PayloadMode::kBuffer) {
+          uint32_t numBuffers = buffers_.size();
+          RETURN_NOT_OK(outputStream->Write(&numBuffers, sizeof(uint32_t)));
+        }
       }
       for (auto& buffer : buffers_) {
         RETURN_NOT_OK(compressAndFlush(std::move(buffer), outputStream, codec_, pool_, compressTime_, writeTime_));

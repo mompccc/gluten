@@ -125,8 +125,75 @@ TEST(StreamCodecTest, ZstdRoundTripLevel1) {
   roundTripViaArrowDecompress(data, 1);
 }
 
+// Compress via StreamCompressor (LZ4_FRAME), decompress via Arrow one-shot.
+// Proves LZ4 streaming output is a standard frame (read side compatible).
+void roundTripLz4ViaArrowDecompress(const std::vector<uint8_t>& input, int level) {
+  auto compressor = StreamCompressor::create(arrow::Compression::LZ4_FRAME, level);
+  ASSERT_NE(compressor, nullptr);
+
+  int64_t inputLen = static_cast<int64_t>(input.size());
+  int64_t outCap = compressor->recommendedOutputSize(inputLen);
+  std::vector<uint8_t> compressed(static_cast<size_t>(outCap));
+
+  const uint8_t* inPtr = input.data();
+  int64_t remaining = inputLen;
+  int64_t totalWritten = 0;
+  while (remaining > 0) {
+    int64_t avail = outCap - totalWritten;
+    if (avail < 64) {
+      compressed.resize(compressed.size() + 65536);
+      outCap = static_cast<int64_t>(compressed.size());
+      avail = outCap - totalWritten;
+    }
+    auto r = compressor->compress(inPtr, remaining, compressed.data() + totalWritten, avail);
+    ASSERT_GT(r.bytesRead, 0) << "compress made no progress";
+    inPtr += r.bytesRead;
+    remaining -= r.bytesRead;
+    totalWritten += r.bytesWritten;
+  }
+  while (true) {
+    int64_t avail = outCap - totalWritten;
+    if (avail < 64) {
+      compressed.resize(compressed.size() + 65536);
+      outCap = static_cast<int64_t>(compressed.size());
+      avail = outCap - totalWritten;
+    }
+    auto e = compressor->end(compressed.data() + totalWritten, avail);
+    totalWritten += e.bytesWritten;
+    if (e.noMoreOutput) {
+      break;
+    }
+  }
+  compressed.resize(static_cast<size_t>(totalWritten));
+
+  ARROW_ASSIGN_OR_THROW(auto arrowCodec, arrow::util::Codec::Create(arrow::Compression::LZ4_FRAME));
+  std::vector<uint8_t> decompressed(input.size());
+  ARROW_ASSIGN_OR_THROW(
+      int64_t decompressedLen,
+      arrowCodec->Decompress(
+          static_cast<int64_t>(compressed.size()), compressed.data(),
+          inputLen, decompressed.data()));
+  EXPECT_EQ(decompressedLen, inputLen);
+  ASSERT_EQ(0, std::memcmp(decompressed.data(), input.data(), input.size()));
+}
+
+TEST(StreamCodecTest, Lz4RoundTripSmall) {
+  auto data = buildData(64 * 1024, 7, /*compressible=*/true);
+  roundTripLz4ViaArrowDecompress(data, 0);
+}
+
+TEST(StreamCodecTest, Lz4RoundTripLarge) {
+  auto data = buildData(3 * 1024 * 1024, 9, /*compressible=*/true);
+  roundTripLz4ViaArrowDecompress(data, 0);
+}
+
+TEST(StreamCodecTest, Lz4RoundTripIncompressible) {
+  auto data = buildData(1024 * 1024, 0xCAFEBABEu, /*compressible=*/false);
+  roundTripLz4ViaArrowDecompress(data, 0);
+}
+
 TEST(StreamCodecTest, UnsupportedCodecReturnsNull) {
-  // GZIP not supported by StreamCodec (only ZSTD/LZ4); expect nullptr fallback.
+  // GZIP not supported by StreamCodec (only ZSTD/LZ4_FRAME); expect nullptr fallback.
   auto compressor = StreamCompressor::create(arrow::Compression::GZIP, 3);
   EXPECT_EQ(compressor, nullptr);
 }

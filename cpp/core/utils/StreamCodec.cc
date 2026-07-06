@@ -19,7 +19,10 @@
 
 #include <arrow/status.h>
 #include <arrow/util/logging.h>
+#include <lz4frame.h>
 #include <zstd.h>
+
+#include <cstring>
 
 namespace gluten {
 namespace {
@@ -83,6 +86,97 @@ class ZstdStreamCompressor final : public StreamCompressor {
   ZSTD_CStream* cstream_;
 };
 
+// LZ4 Frame streaming compressor, based on LZ4F_compressBegin/Update/End.
+// Modeled on bolt's Lz4FrameStreamCompressor. Single-threaded (LZ4 has no
+// nbWorkers equivalent — see analysis; parallelism is not applicable here).
+// Output is a standard LZ4 frame, byte-compatible with Arrow one-shot
+// LZ4_FRAME Decompress.
+class Lz4FrameStreamCompressor final : public StreamCompressor {
+ public:
+  explicit Lz4FrameStreamCompressor(int compressionLevel) : compressionLevel_(compressionLevel) {
+    memset(&prefs_, 0, sizeof(prefs_));
+    prefs_.compressionLevel = compressionLevel;
+    init();
+  }
+
+  ~Lz4FrameStreamCompressor() override {
+    if (cctx_ != nullptr) {
+      LZ4F_freeCompressionContext(cctx_);
+    }
+  }
+
+  StreamCompressResult compress(
+      const uint8_t* input,
+      int64_t inputLen,
+      uint8_t* output,
+      int64_t outputLen) override {
+    size_t dstCap = static_cast<size_t>(outputLen);
+    size_t bytesWritten = 0;
+
+    // Write the frame header on the first compress call.
+    if (!headerWritten_) {
+      if (dstCap < LZ4F_HEADER_SIZE_MAX) {
+        // Output too small for header; report no progress so caller retries.
+        return {0, 0};
+      }
+      size_t h = LZ4F_compressBegin(cctx_, output, dstCap, &prefs_);
+      if (LZ4F_isError(h)) {
+        ARROW_LOG(WARNING) << "LZ4F_compressBegin failed: " << LZ4F_getErrorName(h);
+        return {0, 0};
+      }
+      output += h;
+      dstCap -= h;
+      bytesWritten += h;
+      headerWritten_ = true;
+    }
+
+    size_t ret = LZ4F_compressUpdate(
+        cctx_, output, dstCap, input, static_cast<size_t>(inputLen), nullptr);
+    if (LZ4F_isError(ret)) {
+      ARROW_LOG(WARNING) << "LZ4F_compressUpdate failed: " << LZ4F_getErrorName(ret);
+      return {0, static_cast<int64_t>(bytesWritten)};
+    }
+    bytesWritten += ret;
+    // LZ4F_compressUpdate consumes all input when output has enough room.
+    return {inputLen, static_cast<int64_t>(bytesWritten)};
+  }
+
+  StreamEndResult end(uint8_t* output, int64_t outputLen) override {
+    size_t ret = LZ4F_compressEnd(cctx_, output, static_cast<size_t>(outputLen), nullptr);
+    if (LZ4F_isError(ret)) {
+      ARROW_LOG(WARNING) << "LZ4F_compressEnd failed: " << LZ4F_getErrorName(ret);
+      return {0, true};
+    }
+    // LZ4F_compressEnd writes the frame footer in a single call.
+    return {static_cast<int64_t>(ret), true};
+  }
+
+  void reset() override {
+    if (cctx_ != nullptr) {
+      LZ4F_freeCompressionContext(cctx_);
+      cctx_ = nullptr;
+    }
+    init();
+  }
+
+  int64_t recommendedOutputSize(int64_t inputSize) const override {
+    return static_cast<int64_t>(LZ4F_compressBound(static_cast<size_t>(inputSize), &prefs_)) +
+        LZ4F_HEADER_SIZE_MAX;
+  }
+
+ private:
+  void init() {
+    LZ4F_errorCode_t ret = LZ4F_createCompressionContext(&cctx_, LZ4F_VERSION);
+    ARROW_CHECK(!LZ4F_isError(ret));
+    headerWritten_ = false;
+  }
+
+  int compressionLevel_;
+  LZ4F_cctx* cctx_{nullptr};
+  LZ4F_preferences_t prefs_;
+  bool headerWritten_{false};
+};
+
 } // namespace
 
 std::unique_ptr<StreamCompressor> StreamCompressor::create(
@@ -91,8 +185,8 @@ std::unique_ptr<StreamCompressor> StreamCompressor::create(
   switch (compressionType) {
     case arrow::Compression::ZSTD:
       return std::make_unique<ZstdStreamCompressor>(compressionLevel);
-    // LZ4_FRAME: streaming support added when lz4frame.h is available
-    // (see plan Task 5). Until then LZ4 falls back to one-shot compressBuffer.
+    case arrow::Compression::LZ4_FRAME:
+      return std::make_unique<Lz4FrameStreamCompressor>(compressionLevel);
     default:
       return nullptr; // caller falls back to one-shot
   }

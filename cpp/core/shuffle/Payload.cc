@@ -320,17 +320,21 @@ arrow::Result<std::unique_ptr<BlockPayload>> BlockPayload::fromBuffers(
     arrow::util::Codec* codec,
     std::shared_ptr<arrow::Buffer> compressed,
     PayloadMode mode) {
+  // RowVector mode: concat all buffers into length+value first, reducing
+  // compress calls from O(buffers) to O(1)=2. Aligned with bolt concatBuffer.
+  // Applies to both kCompressed and kToBeCompressed so that serialize's
+  // kToBeCompressed case also sees the 2 concat buffers.
+  if (mode == PayloadMode::kRowVector && (payloadType == Payload::Type::kCompressed || payloadType == Payload::Type::kToBeCompressed)) {
+    ARROW_RETURN_IF(
+        compressed != nullptr,
+        arrow::Status::Invalid("RowVector mode does not support pre-allocated compressed buffer."));
+    std::vector<std::shared_ptr<arrow::Buffer>> concatBuffers;
+    ARROW_ASSIGN_OR_RAISE(concatBuffers, concatBuffersRowVector(std::move(buffers), pool));
+    buffers = std::move(concatBuffers);
+  }
   if (payloadType == Payload::Type::kCompressed) {
     Timer compressionTime;
     compressionTime.start();
-    // RowVector mode: concat all buffers into length+value first, reducing
-    // compress calls from O(buffers) to O(1)=2. Aligned with bolt concatBuffer.
-    if (mode == PayloadMode::kRowVector) {
-      ARROW_RETURN_IF(compressed != nullptr, arrow::Status::Invalid("RowVector mode does not support pre-allocated compressed buffer."));
-      std::vector<std::shared_ptr<arrow::Buffer>> concatBuffers;
-      ARROW_ASSIGN_OR_RAISE(concatBuffers, concatBuffersRowVector(std::move(buffers), pool));
-      buffers = std::move(concatBuffers);
-    }
     // Compress.
     auto maxLength = maxCompressedLength(buffers, codec);
     std::shared_ptr<arrow::Buffer> compressedBuffer;

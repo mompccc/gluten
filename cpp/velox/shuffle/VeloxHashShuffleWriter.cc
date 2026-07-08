@@ -998,7 +998,7 @@ arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> VeloxHashShuffleWrite
     switch (arrowColumnTypes_[i]->id()) {
       case arrow::BinaryType::type_id:
       case arrow::StringType::type_id: {
-        const auto& buffers = partitionBuffers_[fixedWidthColumnCount_ + binaryIdx][partitionId];
+        auto& buffers = partitionBuffers_[fixedWidthColumnCount_ + binaryIdx][partitionId];
         auto& binaryBuf = partitionBinaryAddrs_[binaryIdx][partitionId];
         // validity buffer
         if (buffers[kValidityBufferIndex] != nullptr) {

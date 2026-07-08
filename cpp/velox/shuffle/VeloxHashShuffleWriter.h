@@ -143,10 +143,6 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   // For test only.
   void setPartitionBufferSize(uint32_t newSize) override;
 
-  ~VeloxHashShuffleWriter() override {
-    releaseBufferPoolMemory();
-  }
-
   // for debugging
   void printColumnsInfo() const {
     VS_PRINT_FUNCTION_SPLIT_LINE();
@@ -311,7 +307,10 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
 
   arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> allocateBumpPartitionBuffer(int64_t size);
 
-  void releaseBufferPoolMemory();
+  arrow::Result<std::shared_ptr<arrow::Buffer>> exportPartitionBufferForPayload(
+      std::shared_ptr<arrow::ResizableBuffer>& buffer,
+      int64_t size,
+      bool reuseBuffers);
 
   uint64_t shrinkBufferPoolMemory();
 

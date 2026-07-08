@@ -17,6 +17,7 @@
 
 #include "VeloxHashShuffleWriter.h"
 #include "memory/ArrowMemory.h"
+#include <cstring>
 #include "memory/VeloxColumnarBatch.h"
 #include "memory/VeloxMemoryManager.h"
 #include "shuffle/ShuffleSchema.h"
@@ -347,7 +348,6 @@ arrow::Status VeloxHashShuffleWriter::stop() {
     setSplitState(SplitState::kStop);
     RETURN_NOT_OK(partitionWriter_->stop(&metrics_));
     partitionBuffers_.clear();
-    releaseBufferPoolMemory();
   }
 
   stat();
@@ -1016,22 +1016,20 @@ arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> VeloxHashShuffleWrite
         auto lengthBufferSize = numRows * kSizeOfBinaryArrayLengthBuffer;
         ARROW_RETURN_IF(
             !buffers[kBinaryLengthBufferIndex], arrow::Status::Invalid("Offset buffer of binary array is null."));
-        if (reuseBuffers) {
-          allBuffers.push_back(arrow::SliceBuffer(buffers[kBinaryLengthBufferIndex], 0, lengthBufferSize));
-        } else {
-          RETURN_NOT_OK(buffers[kBinaryLengthBufferIndex]->Resize(lengthBufferSize, true));
-          allBuffers.push_back(std::move(buffers[kBinaryLengthBufferIndex]));
-        }
+        ARROW_ASSIGN_OR_RAISE(
+            auto lengthBuffer,
+            exportPartitionBufferForPayload(buffers[kBinaryLengthBufferIndex], lengthBufferSize, reuseBuffers));
+        allBuffers.push_back(std::move(lengthBuffer));
 
         // Value buffer.
         auto valueBufferSize = binaryBuf.valueOffset;
         ARROW_RETURN_IF(
             !buffers[kBinaryValueBufferIndex], arrow::Status::Invalid("Value buffer of binary array is null."));
-        if (reuseBuffers) {
-          allBuffers.push_back(arrow::SliceBuffer(buffers[kBinaryValueBufferIndex], 0, valueBufferSize));
-        } else if (valueBufferSize > 0) {
-          RETURN_NOT_OK(buffers[kBinaryValueBufferIndex]->Resize(valueBufferSize, true));
-          allBuffers.push_back(std::move(buffers[kBinaryValueBufferIndex]));
+        if (valueBufferSize > 0) {
+          ARROW_ASSIGN_OR_RAISE(
+              auto valueBuffer,
+              exportPartitionBufferForPayload(buffers[kBinaryValueBufferIndex], valueBufferSize, reuseBuffers));
+          allBuffers.push_back(std::move(valueBuffer));
         } else {
           // Binary value buffer size can be 0, in which case cannot be resized.
           allBuffers.push_back(zeroLengthNullBuffer());
@@ -1080,11 +1078,15 @@ arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> VeloxHashShuffleWrite
           valueBufferSize = numRows * (arrow::bit_width(arrowColumnTypes_[i]->id()) >> 3);
         }
         if (reuseBuffers) {
-          auto slicedValueBuffer = arrow::SliceBuffer(valueBuffer, 0, valueBufferSize);
+          ARROW_ASSIGN_OR_RAISE(
+              auto slicedValueBuffer,
+              exportPartitionBufferForPayload(valueBuffer, valueBufferSize, reuseBuffers));
           allBuffers.push_back(std::move(slicedValueBuffer));
         } else {
-          RETURN_NOT_OK(buffers[kFixedWidthValueBufferIndex]->Resize(valueBufferSize, true));
-          allBuffers.push_back(std::move(buffers[kFixedWidthValueBufferIndex]));
+          ARROW_ASSIGN_OR_RAISE(
+              auto exportedValueBuffer,
+              exportPartitionBufferForPayload(buffers[kFixedWidthValueBufferIndex], valueBufferSize, reuseBuffers));
+          allBuffers.push_back(std::move(exportedValueBuffer));
         }
         fixedWidthIdx++;
         break;
@@ -1477,8 +1479,25 @@ arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> VeloxHashShuffleWriter::a
   return BumpResizableBuffer::Allocate(&bufferPool_, size);
 }
 
-void VeloxHashShuffleWriter::releaseBufferPoolMemory() {
-  bufferPool_.clear();
+arrow::Result<std::shared_ptr<arrow::Buffer>> VeloxHashShuffleWriter::exportPartitionBufferForPayload(
+    std::shared_ptr<arrow::ResizableBuffer>& buffer,
+    int64_t size,
+    bool reuseBuffers) {
+  if (std::dynamic_pointer_cast<BumpResizableBuffer>(buffer)) {
+    // Bump memory is pool-owned and may move on Resize; payload must own a copy.
+    ARROW_ASSIGN_OR_RAISE(auto owned, arrow::AllocateResizableBuffer(size, partitionBufferPool_.get()));
+    if (size > 0) {
+      memcpy(owned->mutable_data(), buffer->data(), size);
+    }
+    return owned;
+  }
+  if (reuseBuffers) {
+    return arrow::SliceBuffer(buffer, 0, size);
+  }
+  RETURN_NOT_OK(buffer->Resize(size, true));
+  auto exported = std::static_pointer_cast<arrow::Buffer>(buffer);
+  buffer = nullptr;
+  return exported;
 }
 
 uint64_t VeloxHashShuffleWriter::shrinkBufferPoolMemory() {

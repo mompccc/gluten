@@ -198,7 +198,8 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
       std::shared_ptr<facebook::velox::memory::MemoryPool> veloxPool,
       arrow::MemoryPool* pool)
       : VeloxShuffleWriter(numPartitions, std::move(partitionWriter), std::move(options), std::move(veloxPool), pool),
-        bufferPool_(partitionBufferPool_.get()) {}
+        bufferPool_(partitionBufferPool_.get()),
+        bumpMemoryPool_(&bufferPool_) {}
 
   arrow::Status init();
 
@@ -437,6 +438,7 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   std::optional<uint32_t> partitionBufferInUse_{std::nullopt};
 
   BufferPool bufferPool_;
+  BumpMemoryPool bumpMemoryPool_;
 }; // class VeloxHashBasedShuffleWriter
 
 } // namespace gluten

@@ -72,6 +72,8 @@ TEST_F(BufferPoolTest, shrinkReleasesTrailingChunks) {
   ASSERT_TRUE(pool_.allocateFixed(BufferPool::kDefaultBufferSize, &p).ok());
   ASSERT_TRUE(pool_.allocateFixed(1024, &p).ok());
   EXPECT_EQ(pool_.reservedBytes(), 2 * BufferPool::kDefaultBufferSize);
+  // shrink() only releases chunks after currentBufferIndex_; reset rewinds to chunk[0].
+  pool_.reset();
   const auto shrunk = pool_.shrink();
   EXPECT_EQ(shrunk, BufferPool::kDefaultBufferSize);
   EXPECT_EQ(pool_.reservedBytes(), BufferPool::kDefaultBufferSize);
@@ -87,12 +89,14 @@ TEST_F(BufferPoolTest, clearReleasesAll) {
 
 TEST_F(BufferPoolTest, bumpResizableBufferGrow) {
   BufferPool pool(&shufflePool_);
-  auto bufResult = BumpResizableBuffer::Allocate(&pool, 256);
+  BumpMemoryPool bumpPool(&pool);
+  auto bufResult = BumpResizableBuffer::Allocate(&bumpPool, 256);
   ASSERT_TRUE(bufResult.ok());
   auto buf = std::move(bufResult).ValueOrDie();
   EXPECT_EQ(buf->size(), 256);
   ASSERT_TRUE(buf->Resize(512).ok());
   EXPECT_EQ(buf->size(), 512);
+  buf.reset();
   pool.clear();
 }
 

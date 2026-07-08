@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <arrow/buffer.h>
+#include <arrow/memory_pool.h>
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <glog/logging.h>
@@ -81,6 +82,7 @@ class BufferPool {
   }
 
   /// Release chunks after currentBufferIndex_ (memory pressure path).
+  /// Typically called after reset() rewinds the bump pointer to chunk[0].
   uint64_t shrink() {
     uint64_t shrunkBytes = 0;
     if (!buffers_.empty() && currentBufferIndex_ < static_cast<int32_t>(buffers_.size()) - 1) {
@@ -180,63 +182,71 @@ class BufferPool {
   ShuffleMemoryPool* pool_{nullptr};
 };
 
-/// arrow::ResizableBuffer wrapper over BufferPool bump memory.
-/// Destruction does not free backing storage; BufferPool::clear/shrink manages lifecycle.
-class BumpResizableBuffer : public arrow::ResizableBuffer {
+/// Arrow MemoryPool adapter: Allocate/Reallocate delegate to BufferPool bump;
+/// Free is no-op (chunk lifecycle managed by BufferPool::shrink/clear).
+class BumpMemoryPool final : public arrow::MemoryPool {
  public:
-  static arrow::Result<std::shared_ptr<BumpResizableBuffer>> Allocate(
-      BufferPool* pool,
-      int64_t size,
-      int64_t alignment = BufferPool::kDefaultBufferAlignment) {
-    uint8_t* data = nullptr;
+  explicit BumpMemoryPool(BufferPool* pool) : pool_(pool) {}
+
+  arrow::Status Allocate(int64_t size, int64_t alignment, uint8_t** out) override {
     if (alignment > 1 && alignment <= BufferPool::kDefaultBufferAlignment) {
-      ARROW_RETURN_NOT_OK(pool->allocateFixedAligned(size, &data, alignment));
-    } else {
-      ARROW_RETURN_NOT_OK(pool->allocateFixed(size, &data));
+      return pool_->allocateFixedAligned(size, out, static_cast<int32_t>(alignment));
     }
-    return std::shared_ptr<BumpResizableBuffer>(new BumpResizableBuffer(pool, data, size, alignment));
+    return pool_->allocateFixed(size, out);
   }
 
-  arrow::Status Resize(const int64_t newSize, bool /*shrinkToFit*/ = false) override {
-    if (newSize < 0) {
-      return arrow::Status::Invalid("Negative buffer resize: ", newSize);
-    }
-    if (newSize <= capacity()) {
-      size_ = newSize;
+  arrow::Status Reallocate(int64_t oldSize, int64_t newSize, int64_t alignment, uint8_t** ptr) override {
+    if (newSize <= oldSize) {
       return arrow::Status::OK();
     }
-    uint8_t* newData = nullptr;
-    if (alignment_ > 1 && alignment_ <= BufferPool::kDefaultBufferAlignment) {
-      ARROW_RETURN_NOT_OK(pool_->allocateFixedAligned(newSize, &newData, alignment_));
+    uint8_t* newPtr = nullptr;
+    if (alignment > 1 && alignment <= BufferPool::kDefaultBufferAlignment) {
+      ARROW_RETURN_NOT_OK(pool_->allocateFixedAligned(newSize, &newPtr, static_cast<int32_t>(alignment)));
     } else {
-      ARROW_RETURN_NOT_OK(pool_->allocateFixed(newSize, &newData));
+      ARROW_RETURN_NOT_OK(pool_->allocateFixed(newSize, &newPtr));
     }
-    if (size_ > 0) {
-      std::memcpy(newData, data_, size_);
+    if (oldSize > 0 && *ptr != nullptr) {
+      std::memcpy(newPtr, *ptr, oldSize);
     }
-    data_ = newData;
-    capacity_ = newSize;
-    size_ = newSize;
+    *ptr = newPtr;
     return arrow::Status::OK();
   }
 
-  arrow::Status Reserve(const int64_t newCapacity) override {
-    if (newCapacity <= capacity()) {
-      return arrow::Status::OK();
-    }
-    return Resize(newCapacity, false);
+  void Free(uint8_t* /*buffer*/, int64_t /*size*/, int64_t /*alignment*/) override {}
+
+  int64_t bytes_allocated() const override {
+    return static_cast<int64_t>(pool_->reservedBytes());
+  }
+
+  int64_t max_memory() const override {
+    return static_cast<int64_t>(pool_->reservedBytes());
+  }
+
+  std::string backend_name() const override {
+    return "BumpMemoryPool";
+  }
+
+  int64_t total_bytes_allocated() const override {
+    return static_cast<int64_t>(pool_->reservedBytes());
+  }
+
+  int64_t num_allocations() const override {
+    return 0;
   }
 
  private:
-  BumpResizableBuffer(BufferPool* pool, uint8_t* data, int64_t size, int64_t alignment)
-      : arrow::ResizableBuffer(data, size, /*pool=*/nullptr),
-        pool_(pool),
-        alignment_(alignment) {
-    capacity_ = size;
+  BufferPool* pool_;
+};
+
+/// Tag subclass: uses Arrow ResizableBuffer + BumpMemoryPool for correct Resize.
+class BumpResizableBuffer : public arrow::ResizableBuffer {
+ public:
+  static arrow::Result<std::shared_ptr<BumpResizableBuffer>> Allocate(BumpMemoryPool* pool, int64_t size) {
+    return std::shared_ptr<BumpResizableBuffer>(new BumpResizableBuffer(size, pool));
   }
 
-  BufferPool* pool_;
-  int64_t alignment_;
+ private:
+  BumpResizableBuffer(int64_t size, BumpMemoryPool* pool) : arrow::ResizableBuffer(size, pool) {}
 };
 
 } // namespace gluten

@@ -1476,7 +1476,7 @@ bool VeloxHashShuffleWriter::isExtremelyLargeBatch(facebook::velox::RowVectorPtr
 }
 
 arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> VeloxHashShuffleWriter::allocateBumpPartitionBuffer(int64_t size) {
-  return BumpResizableBuffer::Allocate(&bufferPool_, size);
+  return BumpResizableBuffer::Allocate(&bumpMemoryPool_, size);
 }
 
 arrow::Result<std::shared_ptr<arrow::Buffer>> VeloxHashShuffleWriter::exportPartitionBufferForPayload(

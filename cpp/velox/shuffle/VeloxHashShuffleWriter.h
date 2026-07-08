@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "velox/common/time/CpuWallTimer.h"
@@ -313,6 +314,12 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
       int64_t size,
       bool reuseBuffers);
 
+  bool isBumpPartitionBuffer(const std::shared_ptr<arrow::ResizableBuffer>& buffer) const;
+
+  void unregisterBumpPartitionBuffer(const std::shared_ptr<arrow::ResizableBuffer>& buffer);
+
+  void unregisterBumpPartitionBuffers(const std::vector<std::shared_ptr<arrow::ResizableBuffer>>& buffers);
+
   uint64_t shrinkBufferPoolMemory();
 
   class PartitionBufferGuard {
@@ -439,6 +446,7 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
 
   BufferPool bufferPool_;
   BumpMemoryPool bumpMemoryPool_;
+  std::unordered_set<arrow::ResizableBuffer*> bumpPartitionBufferPtrs_;
 }; // class VeloxHashBasedShuffleWriter
 
 } // namespace gluten

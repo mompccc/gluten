@@ -238,15 +238,4 @@ class BumpMemoryPool final : public arrow::MemoryPool {
   BufferPool* pool_;
 };
 
-/// Tag subclass: uses Arrow ResizableBuffer + BumpMemoryPool for correct Resize.
-class BumpResizableBuffer : public arrow::ResizableBuffer {
- public:
-  static arrow::Result<std::shared_ptr<BumpResizableBuffer>> Allocate(BumpMemoryPool* pool, int64_t size) {
-    return std::shared_ptr<BumpResizableBuffer>(new BumpResizableBuffer(size, pool));
-  }
-
- private:
-  BumpResizableBuffer(int64_t size, BumpMemoryPool* pool) : arrow::ResizableBuffer(size, pool) {}
-};
-
 } // namespace gluten

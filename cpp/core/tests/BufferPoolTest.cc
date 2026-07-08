@@ -90,7 +90,7 @@ TEST_F(BufferPoolTest, clearReleasesAll) {
 TEST_F(BufferPoolTest, bumpResizableBufferGrow) {
   BufferPool pool(&shufflePool_);
   BumpMemoryPool bumpPool(&pool);
-  auto bufResult = BumpResizableBuffer::Allocate(&bumpPool, 256);
+  auto bufResult = arrow::AllocateResizableBuffer(256, &bumpPool);
   ASSERT_TRUE(bufResult.ok());
   auto buf = std::move(bufResult).ValueOrDie();
   EXPECT_EQ(buf->size(), 256);

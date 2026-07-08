@@ -348,6 +348,7 @@ arrow::Status VeloxHashShuffleWriter::stop() {
     setSplitState(SplitState::kStop);
     RETURN_NOT_OK(partitionWriter_->stop(&metrics_));
     partitionBuffers_.clear();
+    bumpPartitionBufferPtrs_.clear();
   }
 
   stat();
@@ -1310,6 +1311,7 @@ arrow::Status VeloxHashShuffleWriter::resetPartitionBuffer(uint32_t partitionId)
   for (auto i = 0; i < fixedWidthColumnCount_; ++i) {
     partitionValidityAddrs_[i][partitionId] = nullptr;
     partitionFixedWidthValueAddrs_[i][partitionId] = nullptr;
+    unregisterBumpPartitionBuffers(partitionBuffers_[i][partitionId]);
     partitionBuffers_[i][partitionId].clear();
   }
 
@@ -1318,6 +1320,7 @@ arrow::Status VeloxHashShuffleWriter::resetPartitionBuffer(uint32_t partitionId)
     auto binaryIdx = i + fixedWidthColumnCount_;
     partitionValidityAddrs_[binaryIdx][partitionId] = nullptr;
     partitionBinaryAddrs_[i][partitionId] = BinaryBuf();
+    unregisterBumpPartitionBuffers(partitionBuffers_[binaryIdx][partitionId]);
     partitionBuffers_[binaryIdx][partitionId].clear();
   }
 
@@ -1476,14 +1479,33 @@ bool VeloxHashShuffleWriter::isExtremelyLargeBatch(facebook::velox::RowVectorPtr
 }
 
 arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> VeloxHashShuffleWriter::allocateBumpPartitionBuffer(int64_t size) {
-  return BumpResizableBuffer::Allocate(&bumpMemoryPool_, size);
+  ARROW_ASSIGN_OR_RAISE(auto buffer, arrow::AllocateResizableBuffer(size, &bumpMemoryPool_));
+  bumpPartitionBufferPtrs_.insert(buffer.get());
+  return buffer;
+}
+
+bool VeloxHashShuffleWriter::isBumpPartitionBuffer(const std::shared_ptr<arrow::ResizableBuffer>& buffer) const {
+  return buffer && bumpPartitionBufferPtrs_.count(buffer.get()) > 0;
+}
+
+void VeloxHashShuffleWriter::unregisterBumpPartitionBuffer(const std::shared_ptr<arrow::ResizableBuffer>& buffer) {
+  if (buffer) {
+    bumpPartitionBufferPtrs_.erase(buffer.get());
+  }
+}
+
+void VeloxHashShuffleWriter::unregisterBumpPartitionBuffers(
+    const std::vector<std::shared_ptr<arrow::ResizableBuffer>>& buffers) {
+  for (const auto& buffer : buffers) {
+    unregisterBumpPartitionBuffer(buffer);
+  }
 }
 
 arrow::Result<std::shared_ptr<arrow::Buffer>> VeloxHashShuffleWriter::exportPartitionBufferForPayload(
     std::shared_ptr<arrow::ResizableBuffer>& buffer,
     int64_t size,
     bool reuseBuffers) {
-  if (std::dynamic_pointer_cast<BumpResizableBuffer>(buffer)) {
+  if (isBumpPartitionBuffer(buffer)) {
     // Bump memory is pool-owned and may move on Resize; payload must own a copy.
     ARROW_ASSIGN_OR_RAISE(auto owned, arrow::AllocateResizableBuffer(size, partitionBufferPool_.get()));
     if (size > 0) {
@@ -1496,6 +1518,7 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> VeloxHashShuffleWriter::exportPart
   }
   RETURN_NOT_OK(buffer->Resize(size, true));
   auto exported = std::static_pointer_cast<arrow::Buffer>(buffer);
+  unregisterBumpPartitionBuffer(buffer);
   buffer = nullptr;
   return exported;
 }

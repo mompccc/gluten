@@ -38,6 +38,7 @@
 
 #include "VeloxShuffleWriter.h"
 #include "memory/VeloxMemoryManager.h"
+#include "shuffle/BufferPool.h"
 #include "shuffle/PartitionWriter.h"
 #include "shuffle/Partitioner.h"
 #include "shuffle/Utils.h"
@@ -142,6 +143,10 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   // For test only.
   void setPartitionBufferSize(uint32_t newSize) override;
 
+  ~VeloxHashShuffleWriter() override {
+    releaseBufferPoolMemory();
+  }
+
   // for debugging
   void printColumnsInfo() const {
     VS_PRINT_FUNCTION_SPLIT_LINE();
@@ -196,7 +201,8 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
       ShuffleWriterOptions options,
       std::shared_ptr<facebook::velox::memory::MemoryPool> veloxPool,
       arrow::MemoryPool* pool)
-      : VeloxShuffleWriter(numPartitions, std::move(partitionWriter), std::move(options), std::move(veloxPool), pool) {}
+      : VeloxShuffleWriter(numPartitions, std::move(partitionWriter), std::move(options), std::move(veloxPool), pool),
+        bufferPool_(partitionBufferPool_.get()) {}
 
   arrow::Status init();
 
@@ -302,6 +308,12 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   bool isExtremelyLargeBatch(facebook::velox::RowVectorPtr& rv) const;
 
   arrow::Status partitioningAndDoSplit(facebook::velox::RowVectorPtr rv, int64_t memLimit);
+
+  arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> allocateBumpPartitionBuffer(int64_t size);
+
+  void releaseBufferPoolMemory();
+
+  uint64_t shrinkBufferPoolMemory();
 
   class PartitionBufferGuard {
    public:
@@ -424,6 +436,8 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   SplitState splitState_{kInit};
 
   std::optional<uint32_t> partitionBufferInUse_{std::nullopt};
+
+  BufferPool bufferPool_;
 }; // class VeloxHashBasedShuffleWriter
 
 } // namespace gluten

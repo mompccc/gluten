@@ -336,6 +336,7 @@ arrow::Status VeloxHashShuffleWriter::partitioningAndDoSplit(facebook::velox::Ro
 arrow::Status VeloxHashShuffleWriter::stop() {
   setSplitState(SplitState::kStopEvict);
   if (options_.partitioning != Partitioning::kSingle) {
+    shrinkBufferPoolMemory();
     for (auto pid = 0; pid < numPartitions_; ++pid) {
       PartitionBufferGuard guard(partitionBufferInUse_, pid);
       RETURN_NOT_OK(evictPartitionBuffers(pid, false));
@@ -346,6 +347,7 @@ arrow::Status VeloxHashShuffleWriter::stop() {
     setSplitState(SplitState::kStop);
     RETURN_NOT_OK(partitionWriter_->stop(&metrics_));
     partitionBuffers_.clear();
+    releaseBufferPoolMemory();
   }
 
   stat();
@@ -926,12 +928,11 @@ arrow::Status VeloxHashShuffleWriter::allocatePartitionBuffer(uint32_t partition
 
         std::shared_ptr<arrow::ResizableBuffer> lengthBuffer{};
         auto lengthBufferSize = newSize * kSizeOfBinaryArrayLengthBuffer;
-        ARROW_ASSIGN_OR_RAISE(
-            lengthBuffer, arrow::AllocateResizableBuffer(lengthBufferSize, partitionBufferPool_.get()));
+        ARROW_ASSIGN_OR_RAISE(lengthBuffer, allocateBumpPartitionBuffer(lengthBufferSize));
 
         std::shared_ptr<arrow::ResizableBuffer> valueBuffer{};
         auto valueBufferSize = valueBufferSizeForBinaryArray(binaryIdx, newSize);
-        ARROW_ASSIGN_OR_RAISE(valueBuffer, arrow::AllocateResizableBuffer(valueBufferSize, partitionBufferPool_.get()));
+        ARROW_ASSIGN_OR_RAISE(valueBuffer, allocateBumpPartitionBuffer(valueBufferSize));
 
         partitionBinaryAddrs_[binaryIdx][partitionId] =
             BinaryBuf(valueBuffer->mutable_data(), lengthBuffer->mutable_data(), valueBufferSize);
@@ -945,7 +946,7 @@ arrow::Status VeloxHashShuffleWriter::allocatePartitionBuffer(uint32_t partition
         std::shared_ptr<arrow::ResizableBuffer> valueBuffer{};
         ARROW_ASSIGN_OR_RAISE(
             valueBuffer,
-            arrow::AllocateResizableBuffer(valueBufferSizeForFixedWidthArray(i, newSize), partitionBufferPool_.get()));
+            allocateBumpPartitionBuffer(valueBufferSizeForFixedWidthArray(i, newSize)));
         partitionFixedWidthValueAddrs_[i][partitionId] = valueBuffer->mutable_data();
         buffers = {std::move(validityBuffer), std::move(valueBuffer)};
         break;
@@ -1361,6 +1362,7 @@ arrow::Result<int64_t> VeloxHashShuffleWriter::evictPartitionBuffersMinSize(int6
   // Evict partition buffers, only when splitState_ == SplitState::kInit, and space freed from
   // shrinking is not enough. In this case partitionBufferSize_ == partitionBufferBase_
   VELOX_CHECK(!partitionBufferInUse_);
+  shrinkBufferPoolMemory();
   int64_t beforeEvict = partitionBufferPool_->bytes_allocated();
   int64_t evicted = 0;
   std::vector<std::pair<uint32_t, uint32_t>> pidToSize;
@@ -1469,6 +1471,18 @@ arrow::Status VeloxHashShuffleWriter::preAllocPartitionBuffers(uint32_t preAlloc
 
 bool VeloxHashShuffleWriter::isExtremelyLargeBatch(facebook::velox::RowVectorPtr& rv) const {
   return (rv->size() > maxBatchSize_ && maxBatchSize_ > 0);
+}
+
+arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> VeloxHashShuffleWriter::allocateBumpPartitionBuffer(int64_t size) {
+  return BumpResizableBuffer::Allocate(&bufferPool_, size);
+}
+
+void VeloxHashShuffleWriter::releaseBufferPoolMemory() {
+  bufferPool_.clear();
+}
+
+uint64_t VeloxHashShuffleWriter::shrinkBufferPoolMemory() {
+  return bufferPool_.shrink();
 }
 
 } // namespace gluten

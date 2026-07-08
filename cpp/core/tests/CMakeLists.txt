@@ -19,3 +19,4 @@ endif()
 
 add_test_case(round_robin_partitioner_test SOURCES RoundRobinPartitionerTest.cc)
 add_test_case(object_store_test SOURCES ObjectStoreTest.cc)
+add_test_case(buffer_pool_test SOURCES BufferPoolTest.cc)

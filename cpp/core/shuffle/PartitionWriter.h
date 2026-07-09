@@ -72,6 +72,32 @@ class PartitionWriter : public Reclaimable {
     return options_;
   }
 
+  // V2 sequential spill APIs (bolt 3.9). Default no-ops for RSS / non-local writers.
+  virtual arrow::Status reclaimFixedSizeNoMerge(int64_t /*size*/, int64_t* actual) {
+    *actual = 0;
+    return arrow::Status::OK();
+  }
+
+  virtual arrow::Status evictPayLoadCache() {
+    return arrow::Status::OK();
+  }
+
+  virtual arrow::Status startClearPayLoadCacheSequential() {
+    return arrow::Status::OK();
+  }
+
+  virtual arrow::Status stopClearPayLoadCacheSequential() {
+    return arrow::Status::OK();
+  }
+
+  virtual arrow::Status clearSpecificPayLoadCache(uint32_t /*pid*/) {
+    return arrow::Status::OK();
+  }
+
+  virtual bool canSpill() {
+    return false;
+  }
+
  protected:
   uint32_t numPartitions_;
   PartitionWriterOptions options_;

@@ -32,6 +32,18 @@ class HashPartitioner final : public Partitioner {
       const int64_t numRows,
       const int32_t vectorIndex,
       std::unordered_map<int32_t, std::vector<int64_t>>& rowVectorIndexMap) override;
+
+  arrow::Status precompute(
+      int32_t* pidArr,
+      const int64_t numRows,
+      std::vector<uint32_t>& partition2RowCount,
+      bool doInitialize) override;
+
+  arrow::Status fill(
+      const int32_t* pidArr,
+      const int64_t numRows,
+      std::vector<uint32_t>& row2partition,
+      std::vector<uint32_t>& partition2RowCount) override;
 };
 
 } // namespace gluten

@@ -348,6 +348,43 @@ class LocalPartitionWriter::PayloadCache {
     return diskSpill;
   }
 
+  // V2 sequential spill: open one spill file, then spill(pid) per partition.
+  arrow::Status startSpill(const std::string& spillFile) {
+    spillFile_ = spillFile;
+    diskSpill_ = std::make_shared<Spill>(Spill::SpillType::kBatchedSpill);
+    ARROW_ASSIGN_OR_RAISE(os_, arrow::io::FileOutputStream::Open(spillFile, true));
+    return arrow::Status::OK();
+  }
+
+  arrow::Result<std::shared_ptr<Spill>> stopSpill() {
+    RETURN_NOT_OK(os_->Close());
+    os_ = nullptr;
+    diskSpill_->setSpillFile(spillFile_);
+    return std::move(diskSpill_);
+  }
+
+  arrow::Status spill(uint32_t pid, arrow::MemoryPool* pool, arrow::util::Codec* codec, int64_t& totalBytesToEvict) {
+    ARROW_ASSIGN_OR_RAISE(auto start, os_->Tell());
+    if (hasCachedPayloads(pid)) {
+      auto& payloads = partitionCachedPayload_[pid];
+      while (!payloads.empty()) {
+        auto payload = std::move(payloads.front());
+        payloads.pop_front();
+        totalBytesToEvict += payload->rawSize();
+        RETURN_NOT_OK(payload->serialize(os_.get()));
+        compressTime_ += payload->getCompressTime();
+        spillTime_ += payload->getWriteTime();
+
+        ARROW_ASSIGN_OR_RAISE(auto end, os_->Tell());
+        DLOG(INFO) << "PayloadCache: Spilled partition " << pid << " file start: " << start << ", file end: " << end;
+        diskSpill_->insertPayload(
+            pid, payload->type(), payload->numRows(), payload->isValidityBuffer(), end - start, pool, codec);
+        start = end;
+      }
+    }
+    return arrow::Status::OK();
+  }
+
   int64_t getCompressTime() const {
     return compressTime_;
   }
@@ -366,6 +403,10 @@ class LocalPartitionWriter::PayloadCache {
   int64_t spillTime_{0};
   int64_t writeTime_{0};
   std::unordered_map<uint32_t, std::list<std::unique_ptr<BlockPayload>>> partitionCachedPayload_;
+  // V2 sequential spill state.
+  std::string spillFile_;
+  std::shared_ptr<Spill> diskSpill_;
+  std::shared_ptr<arrow::io::FileOutputStream> os_;
 };
 
 LocalPartitionWriter::LocalPartitionWriter(
@@ -689,6 +730,65 @@ arrow::Status LocalPartitionWriter::reclaimFixedSize(int64_t size, int64_t* actu
   }
   *actual = reclaimed;
   return arrow::Status::OK();
+}
+
+arrow::Status LocalPartitionWriter::reclaimFixedSizeNoMerge(int64_t size, int64_t* actual) {
+  RETURN_NOT_OK(finishSpill(true));
+  int64_t reclaimed = 0;
+  if (payloadCache_ && payloadCache_->canSpill()) {
+    auto beforeSpill = payloadPool_->bytes_allocated();
+    ARROW_ASSIGN_OR_RAISE(auto spillFile, createTempShuffleFile(nextSpilledFileDir()));
+    ARROW_ASSIGN_OR_RAISE(auto os, openFile(spillFile));
+    spills_.emplace_back();
+    ARROW_ASSIGN_OR_RAISE(
+        spills_.back(),
+        payloadCache_->spillAndClose(os, spillFile, payloadPool_.get(), codec_.get(), totalBytesToEvict_));
+    reclaimed += beforeSpill - payloadPool_->bytes_allocated();
+    if (reclaimed >= size) {
+      *actual = reclaimed;
+      return arrow::Status::OK();
+    }
+  }
+  *actual = reclaimed;
+  return arrow::Status::OK();
+}
+
+arrow::Status LocalPartitionWriter::evictPayLoadCache() {
+  RETURN_NOT_OK(finishSpill(true));
+  if (payloadCache_ && payloadCache_->canSpill()) {
+    ARROW_ASSIGN_OR_RAISE(auto spillFile, createTempShuffleFile(nextSpilledFileDir()));
+    ARROW_ASSIGN_OR_RAISE(auto os, openFile(spillFile));
+    spills_.emplace_back();
+    ARROW_ASSIGN_OR_RAISE(
+        spills_.back(),
+        payloadCache_->spillAndClose(os, spillFile, payloadPool_.get(), codec_.get(), totalBytesToEvict_));
+  }
+  return arrow::Status::OK();
+}
+
+arrow::Status LocalPartitionWriter::startClearPayLoadCacheSequential() {
+  RETURN_NOT_OK(finishSpill(true));
+  ARROW_ASSIGN_OR_RAISE(auto spillFile, createTempShuffleFile(nextSpilledFileDir()));
+  if (UNLIKELY(!payloadCache_)) {
+    payloadCache_ = std::make_shared<PayloadCache>(numPartitions_);
+  }
+  RETURN_NOT_OK(payloadCache_->startSpill(spillFile));
+  return arrow::Status::OK();
+}
+
+arrow::Status LocalPartitionWriter::stopClearPayLoadCacheSequential() {
+  spills_.emplace_back();
+  ARROW_ASSIGN_OR_RAISE(spills_.back(), payloadCache_->stopSpill());
+  return arrow::Status::OK();
+}
+
+arrow::Status LocalPartitionWriter::clearSpecificPayLoadCache(uint32_t pid) {
+  RETURN_NOT_OK(payloadCache_->spill(pid, payloadPool_.get(), codec_.get(), totalBytesToEvict_));
+  return arrow::Status::OK();
+}
+
+bool LocalPartitionWriter::canSpill() {
+  return payloadCache_ && payloadCache_->canSpill();
 }
 
 arrow::Status LocalPartitionWriter::populateMetrics(ShuffleWriterMetrics* metrics) {

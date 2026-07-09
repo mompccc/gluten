@@ -397,13 +397,13 @@ arrow::Status VeloxHashShuffleWriter::buildPartition2Row(uint32_t rowNum) {
   return arrow::Status::OK();
 }
 
-arrow::Status VeloxHashShuffleWriter::updateInputHasNull(const facebook::velox::RowVector& rv) {
+arrow::Status VeloxHashShuffleWriter::updateInputHasNull(const facebook::velox::RowVector& rv, uint32_t offset) {
   SCOPED_TIMER(cpuWallTimingList_[CpuWallTimingHasNull]);
 
   for (size_t col = 0; col < simpleColumnIndices_.size(); ++col) {
     if (!inputHasNull_[col]) {
       auto colIdx = simpleColumnIndices_[col];
-      if (vectorHasNull(rv.childAt(colIdx))) {
+      if (vectorHasNull(rv.childAt(colIdx + offset))) {
         inputHasNull_[col] = true;
       }
     }

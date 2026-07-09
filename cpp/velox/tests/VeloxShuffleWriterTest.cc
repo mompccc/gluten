@@ -93,6 +93,13 @@ std::vector<ShuffleTestParams> createShuffleTestParams() {
           ShuffleWriterType::kHashShuffle, PartitionWriterType::kRss, compression, compressionThreshold});
     }
   }
+  // Force V2 (skip Adaptive) — one local uncompressed case for smoke coverage.
+  params.push_back(ShuffleTestParams{
+      ShuffleWriterType::kHashShuffleV2,
+      PartitionWriterType::kLocal,
+      arrow::Compression::UNCOMPRESSED,
+      0,
+      4096});
 
   return params;
 }
@@ -102,7 +109,8 @@ static const auto kShuffleWriteTestParams = createShuffleTestParams();
 } // namespace
 
 TEST_P(SinglePartitioningShuffleWriter, single) {
-  if (GetParam().shuffleWriterType != ShuffleWriterType::kHashShuffle) {
+  if (GetParam().shuffleWriterType != ShuffleWriterType::kHashShuffle &&
+      GetParam().shuffleWriterType != ShuffleWriterType::kHashShuffleV2) {
     return;
   }
   // Split 1 RowVector.

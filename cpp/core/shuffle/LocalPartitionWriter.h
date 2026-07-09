@@ -76,6 +76,14 @@ class LocalPartitionWriter : public PartitionWriter {
   // 3. After stop() called,
   arrow::Status reclaimFixedSize(int64_t size, int64_t* actual) override;
 
+  // V2 sequential spill (bolt 3.9).
+  arrow::Status reclaimFixedSizeNoMerge(int64_t size, int64_t* actual) override;
+  arrow::Status evictPayLoadCache() override;
+  arrow::Status startClearPayLoadCacheSequential() override;
+  arrow::Status stopClearPayLoadCacheSequential() override;
+  arrow::Status clearSpecificPayLoadCache(uint32_t pid) override;
+  bool canSpill() override;
+
   class LocalSpiller;
 
   class PayloadMerger;

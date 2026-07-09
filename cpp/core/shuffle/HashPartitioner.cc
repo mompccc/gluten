@@ -63,4 +63,36 @@ arrow::Status gluten::HashPartitioner::compute(
   return arrow::Status::OK();
 }
 
+arrow::Status HashPartitioner::precompute(
+    int32_t* pidArr,
+    const int64_t numRows,
+    std::vector<uint32_t>& partition2RowCount,
+    bool doInitialize) {
+  if (doInitialize) {
+    std::fill(partition2RowCount.begin(), partition2RowCount.end(), 0);
+  }
+  for (auto i = 0; i < numRows; ++i) {
+    auto pid = computePid(pidArr, i, numPartitions_);
+    pidArr[i] = pid;
+    partition2RowCount[pid]++;
+  }
+  return arrow::Status::OK();
+}
+
+arrow::Status HashPartitioner::fill(
+    const int32_t* pidArr,
+    const int64_t numRows,
+    std::vector<uint32_t>& row2partition,
+    std::vector<uint32_t>& partition2RowCount) {
+  row2partition.resize(numRows);
+  std::fill(partition2RowCount.begin(), partition2RowCount.end(), 0);
+  for (auto i = 0; i < numRows; ++i) {
+    row2partition[i] = static_cast<uint32_t>(pidArr[i]);
+  }
+  for (auto& pid : row2partition) {
+    partition2RowCount[pid]++;
+  }
+  return arrow::Status::OK();
+}
+
 } // namespace gluten

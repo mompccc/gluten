@@ -17,10 +17,39 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+
 #include "shuffle/Options.h"
 #include "shuffle/Partitioning.h"
+#include "shuffle/ShuffleWriter.h"
 
 namespace gluten {
+
+/// Align with bolt BoltShuffleWriter::calculatePreallocBufferSize.
+inline uint32_t calculatePreallocRowCount(
+    int64_t firstBatchRowNumber,
+    int64_t firstBatchFlatSize,
+    int64_t memLimit,
+    uint32_t numPartitions,
+    int32_t bufferSize) {
+  if (firstBatchRowNumber <= 0) {
+    return static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+  }
+  if (memLimit < ShuffleWriter::kMinMemLimit) {
+    memLimit = ShuffleWriter::kMinMemLimit;
+  }
+  int64_t bytesPerRow = firstBatchFlatSize / firstBatchRowNumber;
+  int64_t preAllocRowCnt = memLimit > 0 && bytesPerRow > 0
+      ? (memLimit / bytesPerRow / numPartitions) >> 2
+      : bufferSize;
+  preAllocRowCnt = std::min(preAllocRowCnt, static_cast<int64_t>(bufferSize));
+  if (preAllocRowCnt < 0) {
+    return 0;
+  }
+  return static_cast<uint32_t>(preAllocRowCnt);
+}
 
 /// Runtime hash writer variant selection (bolt decideBoltShuffleWriterType).
 /// Returns kHashShuffle (V1) or kHashShuffleV2. RowBased writer is out of scope.

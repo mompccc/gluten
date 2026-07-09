@@ -67,6 +67,9 @@ struct ShuffleWriterOptions {
   // Hash shuffle writer: prealloc row threshold for V2 selection (bolt useV2PreallocSizeThreshold).
   int32_t useV2PreallocSizeThreshold = 20;
 
+  // Hash shuffle writer V2: accumulate multiple input batches before split (bolt enableVectorCombination).
+  bool enableVectorCombination = true;
+
   // Sort shuffle writer.
   int32_t sortBufferInitialSize = kDefaultSortBufferSize;
   int32_t sortEvictBufferSize = kDefaultSortEvictBufferSize;

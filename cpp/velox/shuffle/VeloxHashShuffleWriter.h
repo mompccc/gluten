@@ -212,19 +212,20 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
 
   arrow::Status init();
 
- private:
+  // Members / methods below are protected so VeloxHashShuffleWriterV2 can reuse the V1 split infrastructure.
 
-  arrow::Status initPartitions();
+  virtual arrow::Status initPartitions();
 
   arrow::Status initColumnTypes(const facebook::velox::RowVector& rv);
 
-  arrow::Status splitRowVector(const facebook::velox::RowVector& rv);
+  virtual arrow::Status splitRowVector(const facebook::velox::RowVector& rv);
 
-  arrow::Status initFromRowVector(const facebook::velox::RowVector& rv);
+  virtual arrow::Status initFromRowVector(const facebook::velox::RowVector& rv);
 
   arrow::Status buildPartition2Row(uint32_t rowNum);
 
-  arrow::Status updateInputHasNull(const facebook::velox::RowVector& rv);
+  /// @param offset Column index offset when the input RowVector still contains the pid column.
+  arrow::Status updateInputHasNull(const facebook::velox::RowVector& rv, uint32_t offset = 0);
 
   void setSplitState(SplitState state);
 
@@ -249,7 +250,7 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
 
   arrow::Status splitValidityBuffer(const facebook::velox::RowVector& rv);
 
-  arrow::Status splitBinaryArray(const facebook::velox::RowVector& rv);
+  virtual arrow::Status splitBinaryArray(const facebook::velox::RowVector& rv);
 
   arrow::Status splitComplexType(const facebook::velox::RowVector& rv);
 
@@ -284,11 +285,11 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
 
   arrow::Result<std::shared_ptr<arrow::Buffer>> generateComplexTypeBuffers(facebook::velox::RowVectorPtr vector);
 
-  arrow::Status resetValidityBuffer(uint32_t partitionId);
+  virtual arrow::Status resetValidityBuffer(uint32_t partitionId);
 
   arrow::Result<int64_t> shrinkPartitionBuffersMinSize(int64_t size);
 
-  arrow::Result<int64_t> evictPartitionBuffersMinSize(int64_t size);
+  virtual arrow::Result<int64_t> evictPartitionBuffersMinSize(int64_t size);
 
   arrow::Status shrinkPartitionBuffer(uint32_t partitionId);
 

@@ -43,6 +43,25 @@ class Partitioner {
       const int32_t vectorIndex,
       std::unordered_map<int32_t, std::vector<int64_t>>& rowVectorIndexMap) = 0;
 
+  /// Multi-batch precompute: normalize pid in-place and accumulate partition row counts.
+  /// Used by VeloxHashShuffleWriterV2 (bolt 3.14). Default: not implemented.
+  virtual arrow::Status precompute(
+      int32_t* pidArr,
+      const int64_t numRows,
+      std::vector<uint32_t>& partition2RowCount,
+      bool doInitialize) {
+    return arrow::Status::NotImplemented("Partitioner::precompute");
+  }
+
+  /// Multi-batch fill: copy precomputed pids into row2partition and recount this batch.
+  virtual arrow::Status fill(
+      const int32_t* pidArr,
+      const int64_t numRows,
+      std::vector<uint32_t>& row2partition,
+      std::vector<uint32_t>& partition2RowCount) {
+    return arrow::Status::NotImplemented("Partitioner::fill");
+  }
+
  protected:
   Partitioner(int32_t numPartitions, bool hasPid) : numPartitions_(numPartitions), hasPid_(hasPid) {}
 

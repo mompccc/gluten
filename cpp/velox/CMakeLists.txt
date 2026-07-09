@@ -150,6 +150,7 @@ set(VELOX_SRCS
     operators/serializer/VeloxRowToColumnarConverter.cc
     operators/writer/VeloxArrowWriter.cc
     operators/writer/VeloxParquetDataSource.cc
+    shuffle/VeloxAdaptiveHashShuffleWriter.cc
     shuffle/VeloxHashShuffleWriter.cc
     shuffle/VeloxHashShuffleWriterV2.cc
     shuffle/VeloxRssSortShuffleWriter.cc

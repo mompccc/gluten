@@ -287,7 +287,8 @@ class VeloxShuffleWriterTest : public ::testing::TestWithParam<ShuffleTestParams
       ShuffleWriterOptions shuffleWriterOptions,
       uint32_t numPartitions,
       int32_t bufferSize) {
-    if (shuffleWriterOptions.shuffleWriterType == ShuffleWriterType::kHashShuffle) {
+    if (shuffleWriterOptions.shuffleWriterType == ShuffleWriterType::kHashShuffle ||
+        shuffleWriterOptions.shuffleWriterType == ShuffleWriterType::kHashShuffleV2) {
       shuffleWriterOptions.bufferSize = bufferSize;
     }
     GLUTEN_ASSIGN_OR_THROW(

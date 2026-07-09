@@ -16,6 +16,7 @@
  */
 
 #include "shuffle/VeloxShuffleWriter.h"
+#include "shuffle/VeloxAdaptiveHashShuffleWriter.h"
 #include "shuffle/VeloxHashShuffleWriter.h"
 #include "shuffle/VeloxHashShuffleWriterV2.h"
 #include "shuffle/VeloxRssSortShuffleWriter.h"
@@ -33,7 +34,8 @@ arrow::Result<std::shared_ptr<VeloxShuffleWriter>> VeloxShuffleWriter::create(
   std::shared_ptr<VeloxShuffleWriter> shuffleWriter;
   switch (type) {
     case ShuffleWriterType::kHashShuffle:
-      return VeloxHashShuffleWriter::create(
+      // Adaptive: delay V1/V2 selection until first write().
+      return VeloxAdaptiveHashShuffleWriter::create(
           numPartitions, std::move(partitionWriter), std::move(options), veloxPool, arrowPool);
     case ShuffleWriterType::kHashShuffleV2:
       return VeloxHashShuffleWriterV2::create(

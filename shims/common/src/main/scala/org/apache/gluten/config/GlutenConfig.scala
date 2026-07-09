@@ -626,7 +626,7 @@ object GlutenConfig {
   val GLUTEN_MAX_BATCH_SIZE_KEY = "spark.gluten.sql.columnar.maxBatchSize"
 
   // Shuffle writer type.
-  val GLUTEN_HASH_SHUFFLE_WRITER = "hash"
+  val GLUTEN_HASH_SHUFFLE_WRITER = "hash_v2"
   val GLUTEN_SORT_SHUFFLE_WRITER = "sort"
   val GLUTEN_RSS_SORT_SHUFFLE_WRITER = "rss_sort"
 

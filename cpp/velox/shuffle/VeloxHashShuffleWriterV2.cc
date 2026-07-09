@@ -17,7 +17,30 @@
 
 #include "VeloxHashShuffleWriterV2.h"
 
+#include <fstream>
+#include <unistd.h>
+
+#include <glog/logging.h>
+
 namespace gluten {
+
+namespace {
+
+constexpr const char* kV2MarkerFile = "/tmp/gluten_hash_shuffle_v2.log";
+
+void logV2WriterActivated(int64_t taskAttemptId, uint32_t numPartitions, int32_t bufferSize) {
+  LOG(INFO) << "[VeloxHashShuffleWriterV2] activated"
+            << " taskAttemptId=" << taskAttemptId << " pid=" << getpid()
+            << " numPartitions=" << numPartitions << " bufferSize=" << bufferSize
+            << " evict=kCacheNoMerge";
+  std::ofstream marker(kV2MarkerFile, std::ios::app);
+  if (marker) {
+    marker << "taskAttemptId=" << taskAttemptId << " pid=" << getpid()
+           << " partitions=" << numPartitions << " bufferSize=" << bufferSize << '\n';
+  }
+}
+
+} // namespace
 
 VeloxHashShuffleWriterV2::~VeloxHashShuffleWriterV2() {
   bufferPool_.clear();
@@ -29,9 +52,12 @@ arrow::Result<std::shared_ptr<VeloxShuffleWriter>> VeloxHashShuffleWriterV2::cre
     ShuffleWriterOptions options,
     std::shared_ptr<facebook::velox::memory::MemoryPool> veloxPool,
     arrow::MemoryPool* arrowPool) {
+  const auto taskAttemptId = options.taskAttemptId;
+  const auto bufferSize = options.bufferSize;
   std::shared_ptr<VeloxHashShuffleWriterV2> res(new VeloxHashShuffleWriterV2(
       numPartitions, std::move(partitionWriter), std::move(options), std::move(veloxPool), arrowPool));
   RETURN_NOT_OK(res->init());
+  logV2WriterActivated(taskAttemptId, numPartitions, bufferSize);
   return res;
 }
 

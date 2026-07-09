@@ -626,7 +626,7 @@ object GlutenConfig {
   val GLUTEN_MAX_BATCH_SIZE_KEY = "spark.gluten.sql.columnar.maxBatchSize"
 
   // Shuffle writer type.
-  // Default "hash" → C++ VeloxAdaptiveHashShuffleWriter (selects V1/V2 on first write).
+  // Default "hash" -> C++ VeloxAdaptiveHashShuffleWriter (selects V1/V2 on first write).
   // Use "hash_v2" to force VeloxHashShuffleWriterV2 for benchmarks.
   val GLUTEN_HASH_SHUFFLE_WRITER = "hash_v2"
   val GLUTEN_SORT_SHUFFLE_WRITER = "sort"

@@ -41,7 +41,7 @@ static constexpr int32_t kDefaultSortBufferSize = 4096;
 static constexpr int64_t kDefaultReadBufferSize = 1 << 20;
 static constexpr int64_t kDefaultShuffleFileBufferSize = 32 << 10;
 
-enum ShuffleWriterType { kHashShuffle, kSortShuffle, kRssSortShuffle };
+enum ShuffleWriterType { kHashShuffle, kHashShuffleV2, kSortShuffle, kRssSortShuffle };
 enum PartitionWriterType { kLocal, kRss };
 enum SortAlgorithm { kRadixSort, kQuickSort };
 
@@ -63,6 +63,9 @@ struct ShuffleWriterOptions {
   int32_t startPartitionId = 0;
   int64_t threadId = -1;
   ShuffleWriterType shuffleWriterType = kHashShuffle;
+
+  // Hash shuffle writer: prealloc row threshold for V2 selection (bolt useV2PreallocSizeThreshold).
+  int32_t useV2PreallocSizeThreshold = 20;
 
   // Sort shuffle writer.
   int32_t sortBufferInitialSize = kDefaultSortBufferSize;

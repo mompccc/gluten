@@ -563,6 +563,18 @@ arrow::Status LocalPartitionWriter::hashEvict(
     return arrow::Status::OK();
   }
 
+  if (evictType == Evict::kCacheNoMerge) {
+    ARROW_ASSIGN_OR_RAISE(
+        auto payload,
+        inMemoryPayload->toBlockPayload(
+            Payload::kCompressed, payloadPool_.get(), codec_ ? codec_.get() : nullptr));
+    if (UNLIKELY(!payloadCache_)) {
+      payloadCache_ = std::make_shared<PayloadCache>(numPartitions_);
+    }
+    RETURN_NOT_OK(payloadCache_->cache(partitionId, std::move(payload)));
+    return arrow::Status::OK();
+  }
+
   if (!merger_) {
     merger_ =
         std::make_shared<PayloadMerger>(options_, payloadPool_.get(), codec_ ? codec_.get() : nullptr, hasComplexType);

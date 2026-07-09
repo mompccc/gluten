@@ -26,7 +26,7 @@
 namespace gluten {
 
 struct Evict {
-  enum type { kCache, kSpill };
+  enum type { kCache, kSpill, kCacheNoMerge };
 };
 
 class PartitionWriter : public Reclaimable {

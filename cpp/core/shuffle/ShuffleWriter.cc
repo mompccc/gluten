@@ -22,6 +22,7 @@ namespace gluten {
 
 namespace {
 const std::string kHashShuffleName = "hash";
+const std::string kHashShuffleV2Name = "hash_v2";
 const std::string kSortShuffleName = "sort";
 const std::string kRssSortShuffleName = "rss_sort";
 } // namespace
@@ -29,6 +30,9 @@ const std::string kRssSortShuffleName = "rss_sort";
 ShuffleWriterType ShuffleWriter::stringToType(const std::string& type) {
   if (type == kHashShuffleName) {
     return ShuffleWriterType::kHashShuffle;
+  }
+  if (type == kHashShuffleV2Name) {
+    return ShuffleWriterType::kHashShuffleV2;
   }
   if (type == kSortShuffleName) {
     return ShuffleWriterType::kSortShuffle;

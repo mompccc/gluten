@@ -151,6 +151,7 @@ set(VELOX_SRCS
     operators/writer/VeloxArrowWriter.cc
     operators/writer/VeloxParquetDataSource.cc
     shuffle/VeloxHashShuffleWriter.cc
+    shuffle/VeloxHashShuffleWriterV2.cc
     shuffle/VeloxRssSortShuffleWriter.cc
     shuffle/VeloxShuffleReader.cc
     shuffle/VeloxShuffleWriter.cc

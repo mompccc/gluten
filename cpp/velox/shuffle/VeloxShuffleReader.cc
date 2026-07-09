@@ -602,6 +602,7 @@ std::unique_ptr<ColumnarBatchIterator> VeloxColumnarBatchDeserializerFactory::cr
     std::shared_ptr<arrow::io::InputStream> in) {
   switch (shuffleWriterType_) {
     case ShuffleWriterType::kHashShuffle:
+    case ShuffleWriterType::kHashShuffleV2:
       return std::make_unique<VeloxHashShuffleReaderDeserializer>(
           std::move(in),
           schema_,

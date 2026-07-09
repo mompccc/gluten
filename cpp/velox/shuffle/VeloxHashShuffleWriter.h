@@ -20,7 +20,6 @@
 #include <algorithm>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include "velox/common/time/CpuWallTimer.h"
@@ -39,7 +38,6 @@
 
 #include "VeloxShuffleWriter.h"
 #include "memory/VeloxMemoryManager.h"
-#include "shuffle/BufferPool.h"
 #include "shuffle/PartitionWriter.h"
 #include "shuffle/Partitioner.h"
 #include "shuffle/Utils.h"
@@ -191,18 +189,30 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
     VS_PRINT_CONTAINER(input_has_null_);
   }
 
- private:
+ protected:
   VeloxHashShuffleWriter(
       uint32_t numPartitions,
       std::unique_ptr<PartitionWriter> partitionWriter,
       ShuffleWriterOptions options,
       std::shared_ptr<facebook::velox::memory::MemoryPool> veloxPool,
       arrow::MemoryPool* pool)
-      : VeloxShuffleWriter(numPartitions, std::move(partitionWriter), std::move(options), std::move(veloxPool), pool),
-        bufferPool_(partitionBufferPool_.get()),
-        bumpMemoryPool_(&bufferPool_) {}
+      : VeloxShuffleWriter(numPartitions, std::move(partitionWriter), std::move(options), std::move(veloxPool), pool) {}
+
+  virtual arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> allocatePartitionResizableBuffer(int64_t size);
+
+  virtual Evict::type hashEvictType() const;
+
+  virtual void onBeforeStopEvict() {}
+
+  virtual void onAfterStop() {}
+
+  virtual void onBeforeEvictPartitionBuffersMinSize() {}
+
+  virtual void onAfterEvictPartitionBuffersMinSize() {}
 
   arrow::Status init();
+
+ private:
 
   arrow::Status initPartitions();
 
@@ -306,21 +316,6 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   bool isExtremelyLargeBatch(facebook::velox::RowVectorPtr& rv) const;
 
   arrow::Status partitioningAndDoSplit(facebook::velox::RowVectorPtr rv, int64_t memLimit);
-
-  arrow::Result<std::shared_ptr<arrow::ResizableBuffer>> allocateBumpPartitionBuffer(int64_t size);
-
-  arrow::Result<std::shared_ptr<arrow::Buffer>> exportPartitionBufferForPayload(
-      std::shared_ptr<arrow::ResizableBuffer>& buffer,
-      int64_t size,
-      bool reuseBuffers);
-
-  bool isBumpPartitionBuffer(const std::shared_ptr<arrow::ResizableBuffer>& buffer) const;
-
-  void unregisterBumpPartitionBuffer(const std::shared_ptr<arrow::ResizableBuffer>& buffer);
-
-  void unregisterBumpPartitionBuffers(const std::vector<std::shared_ptr<arrow::ResizableBuffer>>& buffers);
-
-  uint64_t shrinkBufferPoolMemory();
 
   class PartitionBufferGuard {
    public:
@@ -443,10 +438,6 @@ class VeloxHashShuffleWriter : public VeloxShuffleWriter {
   SplitState splitState_{kInit};
 
   std::optional<uint32_t> partitionBufferInUse_{std::nullopt};
-
-  BufferPool bufferPool_;
-  BumpMemoryPool bumpMemoryPool_;
-  std::unordered_set<arrow::ResizableBuffer*> bumpPartitionBufferPtrs_;
 }; // class VeloxHashBasedShuffleWriter
 
 } // namespace gluten

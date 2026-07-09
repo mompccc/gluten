@@ -16,6 +16,7 @@
  */
 
 #include "shuffle/VeloxShuffleWriter.h"
+#include "shuffle/Partitioning.h"
 #include "shuffle/VeloxAdaptiveHashShuffleWriter.h"
 #include "shuffle/VeloxHashShuffleWriter.h"
 #include "shuffle/VeloxHashShuffleWriterV2.h"
@@ -38,6 +39,12 @@ arrow::Result<std::shared_ptr<VeloxShuffleWriter>> VeloxShuffleWriter::create(
       return VeloxAdaptiveHashShuffleWriter::create(
           numPartitions, std::move(partitionWriter), std::move(options), veloxPool, arrowPool);
     case ShuffleWriterType::kHashShuffleV2:
+      // V2 has no single-partition path (gather / numPartitions=1). Fall back to
+      // V1 so force-hash_v2 still works for queries with an outer aggregation.
+      if (options.partitioning == Partitioning::kSingle) {
+        return VeloxHashShuffleWriter::create(
+            numPartitions, std::move(partitionWriter), std::move(options), veloxPool, arrowPool);
+      }
       return VeloxHashShuffleWriterV2::create(
           numPartitions, std::move(partitionWriter), std::move(options), veloxPool, arrowPool);
     case ShuffleWriterType::kSortShuffle:

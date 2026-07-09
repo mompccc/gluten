@@ -138,7 +138,8 @@ class ColumnarShuffleWriter[K, V](
         val rows = cb.numRows()
         val handle = ColumnarBatches.getNativeHandle(BackendsApiManager.getBackendName, cb)
         if (nativeShuffleWriter == -1L) {
-          logInfo(s"Gluten shuffle writer: type=$shuffleWriterType partitions=${dep.nativePartitioning.getNumPartitions}")
+          val numParts = dep.nativePartitioning.getNumPartitions
+          logInfo(s"Gluten shuffle writer: type=$shuffleWriterType partitions=$numParts")
           nativeShuffleWriter = jniWrapper.make(
             dep.nativePartitioning.getShortName,
             dep.nativePartitioning.getNumPartitions,
